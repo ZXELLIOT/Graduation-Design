@@ -24,7 +24,7 @@ encoder = SimCSEEncoder()
 # 进行相似度计算
 print("\n[4/4] 进行对话匹配相似度计算模块...")
 matcher = DialogMatcher(encoder, queries, replies)
-print("\n✅ 系统所有模块加载完成，正在启动 Web UI...\n")
+print("\n系统所有模块加载完成，正在启动 Web UI...\n")
 
 def predict(user_input):
     """前端交互函数"""
