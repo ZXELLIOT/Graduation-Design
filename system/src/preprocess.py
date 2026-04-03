@@ -12,8 +12,8 @@ class TextPreprocessor:
         self.output_path = output_path
         # 匹配URL网址
         self.url_pattern = re.compile(r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\(\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+')
-        # 匹配常见的颜文字和简单的特殊符号
-        self.special_char_pattern = re.compile(r'[^\u4e00-\u9fa5a-zA-Z0-9，。！？、~（）()<>《》\-]')
+        # 匹配常见的颜文字和简单的特殊符号（追加了对 + 号等常见符号的保留）
+        self.special_char_pattern = re.compile(r'[^\u4e00-\u9fa5a-zA-Z0-9，。！？、~（）()<>《》\-+*&#@%：:]')
 
     def clean_text(self, text):
         """
@@ -51,7 +51,7 @@ class TextPreprocessor:
         print(f"开始处理原始数据：{self.raw_path}")
         queries = []
         replies = []
-        # 1. 读取原始数据（假设是以 Tab 分隔的 TXT 文件）
+        # 1. 读取原始数据
         try:
             with open(self.raw_path, 'r', encoding='utf-8') as f:
                 lines = f.readlines()
@@ -63,10 +63,13 @@ class TextPreprocessor:
             parts = line.strip().split('\t')
             if len(parts) >= 2:
                 raw_q, raw_r = parts[0], parts[1]
-                clean_q = self.clean_text(raw_q)
-                clean_r = self.clean_text(raw_r)
-                # 校验清洁后的 q 和 r 是否合格
-                if self.is_valid_sentence(clean_q) and self.is_valid_sentence(clean_r):
+                
+                # 移除数据集中因 Tokenizer 产生的分词空格
+                clean_q = raw_q.replace(" ", "").strip()
+                clean_r = raw_r.replace(" ", "").strip()
+                
+                # 校验非空并保证对话具有基础长度
+                if len(clean_q) >= 2 and len(clean_r) > 0:
                     queries.append(clean_q)
                     replies.append(clean_r)
         # 3. 构建 DataFrame 并进行数据集去重
