@@ -21,8 +21,9 @@ rad.json
 #Test results file
 TestResults.xml
 #pycache folders
-.__pycache__/
+*.__pycache__/
 #data folders
-.data/
+*.data/
+*.pt
 #log files
 *.log
