@@ -65,12 +65,12 @@ class TextPreprocessor:
                 if len(parts) >= 2:
                     raw_q, raw_r = parts[0], parts[1]
 
-                    # 去掉分词空格，让句子更自然
-                    clean_q = raw_q.replace(" ", "").strip()
-                    clean_r = raw_r.replace(" ", "").strip()
+                    # 去掉分词空格后再做统一清洗
+                    clean_q = self.clean_text(raw_q.replace(" ", ""))
+                    clean_r = self.clean_text(raw_r.replace(" ", ""))
 
-                    # 基础过滤：问句至少 2 字，答句非空
-                    if len(clean_q) >= 2 and len(clean_r) > 0:
+                    # 统一长度和内容过滤
+                    if self.is_valid_sentence(clean_q) and self.is_valid_sentence(clean_r):
                         queries.append(clean_q)
                         replies.append(clean_r)
 

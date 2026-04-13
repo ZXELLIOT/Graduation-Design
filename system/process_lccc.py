@@ -1,85 +1,82 @@
 import os
 import json
 import random
-import zipfile
 
 # 默认参数
 DEFAULT_JSON_FILENAME = "LCCC-base_train.json"
 DEFAULT_OUTPUT_TXT_PATH = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "data", "raw_dialogues.txt"
 )
-DEFAULT_SAMPLE_SIZE = 100000
-# 默认在项目根目录查找 LCCC 压缩包
+DEFAULT_SAMPLE_SIZE = 10000
+# 默认在项目根目录查找 LCCC 解压目录
 DEFAULT_WORK_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DEFAULT_ZIP_CANDIDATES = [
-    r"C:\Users\13713\个人信息\毕业设计\LCCC-base-split.zip",
-    r"C:\Users\13713\个人信息\毕业设计\LCCC-large.zip",
-    os.path.join(DEFAULT_WORK_DIR, "LCCC-base-split.zip"),
-    os.path.join(DEFAULT_WORK_DIR, "LCCC-large.zip"),
+DEFAULT_DATASET_DIR_CANDIDATES = [
+    r"C:\Users\13713\个人信息\毕业设计\LCCC-base-split",
+    r"C:\Users\13713\个人信息\毕业设计\LCCC-large",
+    os.path.join(DEFAULT_WORK_DIR, "LCCC-base-split"),
+    os.path.join(DEFAULT_WORK_DIR, "LCCC-large"),
 ]
 
 JSON_FILENAME = DEFAULT_JSON_FILENAME
 OUTPUT_TXT_PATH = DEFAULT_OUTPUT_TXT_PATH
-SAMPLE_SIZE = DEFAULT_SAMPLE_SIZE  # 提取 10 万条作为训练及测试语料
+SAMPLE_SIZE = DEFAULT_SAMPLE_SIZE
 
 
-def _resolve_zip_path():
-    for candidate in DEFAULT_ZIP_CANDIDATES:
+def _resolve_dataset_dir():
+    for candidate in DEFAULT_DATASET_DIR_CANDIDATES:
         if os.path.exists(candidate):
             return candidate
 
-    # 兼容把压缩包放在脚本同级目录的情况
+    # 兼容把解压目录放在脚本同级目录的情况
     local_candidates = [
         os.path.join(os.path.dirname(os.path.abspath(__file__)), name)
-        for name in ("LCCC-base-split.zip", "LCCC-large.zip")
+        for name in ("LCCC-base-split", "LCCC-large")
     ]
     for candidate in local_candidates:
         if os.path.exists(candidate):
             return candidate
 
-    return DEFAULT_ZIP_CANDIDATES[0]
+    return DEFAULT_DATASET_DIR_CANDIDATES[0]
 
 
-LCCC_ZIP_PATH = _resolve_zip_path()
+LCCC_DATASET_DIR = _resolve_dataset_dir()
 
 
-def _resolve_json_filename(zip_path: str) -> str:
-    """自动选择压缩包中的 train JSON 文件。"""
+def _resolve_json_path(dataset_dir: str) -> str:
+    """自动选择解压目录中的 train JSON 文件。"""
     preferred_names = [
         "LCCC-base_train.json",
         "LCCC-large_train.json",
     ]
-    with zipfile.ZipFile(zip_path, "r") as z:
-        names = z.namelist()
 
-    for name in preferred_names:
-        if name in names:
-            return name
+    for root, _, files in os.walk(dataset_dir):
+        for name in preferred_names:
+            if name in files:
+                return os.path.join(root, name)
 
     # 回退：自动匹配以 train 结尾的 json 文件
-    for name in names:
-        lower_name = name.lower()
-        if lower_name.endswith(".json") and "train" in lower_name:
-            return name
+    for root, _, files in os.walk(dataset_dir):
+        for name in files:
+            lower_name = name.lower()
+            if lower_name.endswith(".json") and "train" in lower_name:
+                return os.path.join(root, name)
 
     # 兼容旧默认值
-    return JSON_FILENAME
+    return os.path.join(dataset_dir, JSON_FILENAME)
 
 def extract_lccc():
-    if not os.path.exists(LCCC_ZIP_PATH):
-        print(f"找不到 LCCC 数据集压缩包：{LCCC_ZIP_PATH}")
+    if not os.path.exists(LCCC_DATASET_DIR):
+        print(f"找不到 LCCC 数据集目录：{LCCC_DATASET_DIR}")
         return
 
-    json_filename = _resolve_json_filename(LCCC_ZIP_PATH)
-    print(f"使用压缩包: {LCCC_ZIP_PATH}")
-    print(f"使用 JSON 文件: {json_filename}")
+    json_path = _resolve_json_path(LCCC_DATASET_DIR)
+    print(f"使用数据目录: {LCCC_DATASET_DIR}")
+    print(f"使用 JSON 文件: {json_path}")
 
-    print("开始从压缩包中加载 LCCC JSON 数据...")
+    print("开始从解压目录中加载 LCCC JSON 数据...")
     try:
-        # 直接读取 ZIP 压缩包中的大 JSON 文件以节省硬盘空间
-        with zipfile.ZipFile(LCCC_ZIP_PATH, 'r') as z:
-            with z.open(json_filename) as f:
-                data = json.load(f)
+        with open(json_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
     except Exception as e:
         print(f"JSON 解析失败：{e}")
         return

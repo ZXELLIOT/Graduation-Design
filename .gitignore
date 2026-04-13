@@ -25,13 +25,8 @@ htmlcov/
 *.bak
 
 # Generated data and embeddings
-system/data/raw_dialogues.txt
-system/data/corpus.csv
-system/data/corpus_embeddings.pt
-system/data/*.cache
-
-# Generated local model artifacts
-system/modle/my-simcse/
+system/data/*
+system/model/
 
 # Misc runtime files
 .DS_Store
