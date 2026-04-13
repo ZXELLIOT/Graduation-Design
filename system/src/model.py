@@ -53,6 +53,10 @@ class SimCSEEncoder:
         """
         if isinstance(texts, str):
             texts = [texts]
+
+        if not texts:
+            hidden_size = getattr(self.model.config, "hidden_size", 0)
+            return torch.empty((0, hidden_size), dtype=torch.float32)
             
         all_embeddings = []
         for i in range(0, len(texts), batch_size):

@@ -15,7 +15,7 @@ class SimilarityComparator:
 
     @classmethod
     def compare(cls, current_scores, semantic_scores):
-        """在“当前比对方式”和“SimCSE 纯语义”间选取最高分。"""
+        """在“当前加权比对”和“SimCSE 语义打分”间选取最高分。"""
         cur_idx, cur_score = cls._best_of(current_scores)
         sem_idx, sem_score = cls._best_of(semantic_scores)
 

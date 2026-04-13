@@ -15,6 +15,9 @@ class DialogMatcher:
         self.encoder = encoder
         self.queries = queries
         self.replies = replies
+        # 预先计算轻量特征，减少每次检索时的重复开销
+        self.query_char_sets = [set(q) for q in self.queries]
+        self.query_lengths = [max(1, len(q)) for q in self.queries]
         if len(self.queries) > 0:
             print(f"当前加载的语料库数据量：{len(self.queries)} 条")
             
@@ -175,7 +178,7 @@ class DialogMatcher:
         return self.encoder.simcse_similarity(user_emb, self.corpus_embeddings)
 
     def get_best_match(self, user_text):
-        """计算余弦相似度并找出最佳回答"""
+        """计算两路分数并找出最佳回答。"""
         if self.corpus_embeddings is None or len(self.queries) == 0:
             return "知识库为空，暂无法回答问题。", 0.0, None
         # 1. 编码用户的实时输入
