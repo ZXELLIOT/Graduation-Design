@@ -1,7 +1,10 @@
 import os
 import sys
 
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+# 确保从任意工作目录启动时都能找到 src 包
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+if CURRENT_DIR not in sys.path:
+    sys.path.append(CURRENT_DIR)
 
 import gradio as gr
 
@@ -10,18 +13,24 @@ from src.model import SimCSEEncoder
 from src.matcher import DialogMatcher
 from src.preprocess import TextPreprocessor
 
+
 def initialize_system():
+    """按固定顺序初始化系统核心组件。"""
     print("==========================================================")
     print("             基于 SimCSE 的检索式中文对话系统           ")
     print("==========================================================\n")
 
     print("[1/4] 执行语料数据预处理...")
     preprocessor = TextPreprocessor()
-    preprocessor.process()
+    ok = preprocessor.process()
+    if ok is False:
+        raise RuntimeError("语料预处理失败，请检查原始数据文件与路径配置。")
 
     print("\n[2/4] 加载对话语料...")
     data_loader = DataLoader()
     queries, replies = data_loader.load_corpus()
+    if not queries or not replies:
+        raise RuntimeError("语料加载为空，请确认 data/corpus.csv 是否生成且内容有效。")
 
     print("\n[3/4] 初始化 SimCSE 语义模型...")
     encoder = SimCSEEncoder()
@@ -38,7 +47,7 @@ matcher = None
 
 
 def get_matcher():
-    """按需初始化并复用 matcher。"""
+    """按需初始化并复用 matcher，减少重复加载开销。"""
     global matcher
     if matcher is None:
         matcher = initialize_system()
@@ -49,15 +58,32 @@ def predict(user_input: str, history: list) -> str:
     """
     接收用户输入，计算相似度并返回最佳匹配回复。
     """
-    if not user_input or not user_input.strip():
+    _ = history  # gradio 会传入历史消息，这里保留接口但不参与检索
+
+    normalized_input = (user_input or "").strip()
+    if not normalized_input:
         return "请输入有效的内容。"
 
-    reply, score, matched_q = get_matcher().get_best_match(user_input)
+    try:
+        local_matcher = get_matcher()
+        reply, score, matched_q = local_matcher.get_best_match(normalized_input)
+    except Exception as e:
+        return f"系统暂时不可用，请稍后重试。\n\n> 详细信息: {e}"
+
+    selected_method = getattr(local_matcher, "last_selected_method", "unknown")
     
     if matched_q:
-        diagnostic_log = f"\n\n> 匹配问句:「*{matched_q}*」| 相似度: **{score:.4f}**"
+        diagnostic_log = (
+            f"\n\n> 匹配问句:「*{matched_q}*」"
+            f" | 相似度: **{score:.4f}**"
+            f" | 评分分支: **{selected_method}**"
+        )
     else:
-        diagnostic_log = f"\n\n> 当前相似度得分低于设定阈值，无法给出准确回复 | 最大相似度: **{score:.4f}**"
+        diagnostic_log = (
+            "\n\n> 当前相似度得分低于设定阈值，无法给出准确回复"
+            f" | 最大相似度: **{score:.4f}**"
+            f" | 评分分支: **{selected_method}**"
+        )
         
     return reply + diagnostic_log
 
