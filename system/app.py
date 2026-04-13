@@ -33,8 +33,16 @@ def initialize_system():
     print("\n[√] 系统核心模块加载完成，准备启动 Web 界面...\n")
     return matcher
 
-# 初始化系统
-matcher = initialize_system()
+# 延迟初始化，避免导入模块时触发完整启动流程
+matcher = None
+
+
+def get_matcher():
+    """按需初始化并复用 matcher。"""
+    global matcher
+    if matcher is None:
+        matcher = initialize_system()
+    return matcher
 
 
 def predict(user_input: str, history: list) -> str:
@@ -43,8 +51,8 @@ def predict(user_input: str, history: list) -> str:
     """
     if not user_input or not user_input.strip():
         return "请输入有效的内容。"
-    
-    reply, score, matched_q = matcher.get_best_match(user_input)
+
+    reply, score, matched_q = get_matcher().get_best_match(user_input)
     
     if matched_q:
         diagnostic_log = f"\n\n> 匹配问句:「*{matched_q}*」| 相似度: **{score:.4f}**"
@@ -68,6 +76,8 @@ demo = gr.ChatInterface(
 if __name__ == "__main__":
     # 启动界面
     try:
+        # 主进程启动前初始化一次，避免首条消息等待模型加载
+        get_matcher()
         demo.launch(server_name="127.0.0.1", server_port=7860, inbrowser=True)
     except Exception as e:
         print(f"启动界面失败: {e}")

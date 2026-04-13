@@ -3,10 +3,18 @@ import json
 import random
 import zipfile
 
-# LCCC ZIP文件路径
-LCCC_ZIP_PATH = r"C:\Users\13713\个人信息\毕业设计\LCCC-base-split.zip"
-# 目标 JSON 文件的内部名
-JSON_FILENAME = "LCCC-base_train.json"
+# 默认参数
+DEFAULT_JSON_FILENAME = "LCCC-base_train.json"
+DEFAULT_OUTPUT_TXT_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "data", "raw_dialogues.txt"
+)
+DEFAULT_SAMPLE_SIZE = 100000
+# 默认在项目根目录查找 LCCC 压缩包
+DEFAULT_WORK_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DEFAULT_ZIP_CANDIDATES = [
+    os.path.join(DEFAULT_WORK_DIR, "LCCC-base-split.zip"),
+    os.path.join(DEFAULT_WORK_DIR, "LCCC-large.zip"),
+]
 
 # 确定语料提取规模
 OUTPUT_TXT_PATH = r"c:\Users\13713\个人信息\毕业设计\Graduation-Design\system\data\raw_dialogues.txt"

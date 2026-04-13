@@ -53,30 +53,32 @@ class TextPreprocessor:
         replies = []
         # 1. 读取原始数据
         try:
-            with open(self.raw_path, 'r', encoding='utf-8') as f:
-                lines = f.readlines()
+            f = open(self.raw_path, 'r', encoding='utf-8')
         except FileNotFoundError:
             print("未找到原始数据文件！请检查路径。")
             return False
-        # 2. 逐行清洗与规则过滤
-        for line in lines:
-            parts = line.strip().split('\t')
-            if len(parts) >= 2:
-                raw_q, raw_r = parts[0], parts[1]
-                
-                # 移除数据集中因 Tokenizer 产生的分词空格
-                clean_q = raw_q.replace(" ", "").strip()
-                clean_r = raw_r.replace(" ", "").strip()
-                
-                # 校验非空并保证对话具有基础长度
-                if len(clean_q) >= 2 and len(clean_r) > 0:
-                    queries.append(clean_q)
-                    replies.append(clean_r)
-        # 3. 构建 DataFrame 并进行数据集去重
+
+        # 2) 按行处理，拆分问句和答句
+        with f:
+            for line in f:
+                parts = line.strip().split('\t')
+                if len(parts) >= 2:
+                    raw_q, raw_r = parts[0], parts[1]
+
+                    # 去掉分词空格，让句子更自然
+                    clean_q = raw_q.replace(" ", "").strip()
+                    clean_r = raw_r.replace(" ", "").strip()
+
+                    # 基础过滤：问句至少 2 字，答句非空
+                    if len(clean_q) >= 2 and len(clean_r) > 0:
+                        queries.append(clean_q)
+                        replies.append(clean_r)
+
+        # 3) 组装表格并去重
         df = pd.DataFrame({'query': queries, 'reply': replies})
         original_count = len(df)
-        # 剔除完全重复的问答
-        df.drop_duplicates(subset=['query'], keep='first', inplace=True)
+        # 以 query+reply 共同去重，保留一问多答的信息
+        df.drop_duplicates(subset=['query', 'reply'], keep='first', inplace=True)
         final_count = len(df)
         # 4. 确保输出目录存在
         os.makedirs(os.path.dirname(self.output_path), exist_ok=True)
