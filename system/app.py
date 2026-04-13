@@ -11,7 +11,7 @@ import gradio as gr
 from src.data_loader import DataLoader
 from src.model import SimCSEEncoder
 from src.matcher import DialogMatcher
-from src.preprocess import TextPreprocessor
+from src.preprocess import process_train_test_corpus
 
 
 def initialize_system():
@@ -21,18 +21,20 @@ def initialize_system():
     print("==========================================================\n")
 
     print("[1/4] 执行语料数据预处理...")
-    preprocessor = TextPreprocessor()
-    ok = preprocessor.process()
+    # 同时清洗训练集和测试集，默认检索库仍使用训练集。
+    ok = process_train_test_corpus()
     if ok is False:
         raise RuntimeError("语料预处理失败，请检查原始数据文件与路径配置。")
 
     print("\n[2/4] 加载对话语料...")
+    # 读取 query/reply 两列，作为知识库基础数据。
     data_loader = DataLoader()
     queries, replies = data_loader.load_corpus()
     if not queries or not replies:
         raise RuntimeError("语料加载为空，请确认 data/corpus.csv 是否生成且内容有效。")
 
     print("\n[3/4] 初始化 SimCSE 语义模型...")
+    # 这里会加载本地模型和词表。
     encoder = SimCSEEncoder()
 
     print("\n[4/4] 构建句子特征向量与匹配索引...")
@@ -50,6 +52,7 @@ def get_matcher():
     """按需初始化并复用 matcher，减少重复加载开销。"""
     global matcher
     if matcher is None:
+        # 首次调用时才执行完整初始化。
         matcher = initialize_system()
     return matcher
 
@@ -58,13 +61,15 @@ def predict(user_input: str, history: list) -> str:
     """
     接收用户输入，计算相似度并返回最佳匹配回复。
     """
-    _ = history  # gradio 会传入历史消息，这里保留接口但不参与检索
+    # gradio 会传入历史消息，这里保留接口但不参与检索。
+    _ = history
 
     normalized_input = (user_input or "").strip()
     if not normalized_input:
         return "请输入有效的内容。"
 
     try:
+        # 每次请求都复用同一个 matcher，避免重复加载模型。
         local_matcher = get_matcher()
         reply, score, matched_q = local_matcher.get_best_match(normalized_input)
     except Exception as e:
@@ -72,6 +77,7 @@ def predict(user_input: str, history: list) -> str:
 
     selected_method = getattr(local_matcher, "last_selected_method", "unknown")
     
+    # 附带诊断信息，便于观察命中结果和分数。
     if matched_q:
         diagnostic_log = (
             f"\n\n> 匹配问句:「*{matched_q}*」"
@@ -80,7 +86,7 @@ def predict(user_input: str, history: list) -> str:
         )
     else:
         diagnostic_log = (
-            "\n\n> 当前相似度得分低于设定阈值，无法给出准确回复"
+            "\n\n> 当前相似度得分低于设定阈值，已返回基于相近语料整理的参考回答"
             f" | 最大相似度: **{score:.4f}**"
             f" | 模块: **{selected_method}**"
         )
@@ -93,7 +99,7 @@ demo = gr.ChatInterface(
     fn=predict,
     title="检索式中文对话系统 (SimCSE)",
     description=(
-        "**计算机专业本科毕业设计** | **核心架构:** 基于从0训练的字符级句向量模型与余弦相似度检索。\n"
+        "**计算机专业本科毕业设计** | **核心架构:** 字符级句向量模型与余弦相似度检索。\n"
         "系统使用 LCCC 语料进行检索，并在本地缓存句子特征向量以提高启动和响应速度。"
     ),
     examples=["最近有什么好看的电影推荐吗？", "毕业设计进度有点卡住了，好焦虑", "今天天气真不错～"],
@@ -104,6 +110,7 @@ if __name__ == "__main__":
     try:
         # 主进程启动前初始化一次，避免首条消息等待模型加载
         get_matcher()
+        # 指定本地地址和端口，便于浏览器直接访问。
         demo.launch(server_name="127.0.0.1", server_port=7860, inbrowser=True)
     except Exception as e:
         print(f"启动界面失败: {e}")

@@ -1,65 +1,97 @@
-﻿# 毕业设计：基于 SimCSE 的检索式中文对话系统
+﻿# 项目简介
 
-> 最后更新：2026-04-13
-> 项目性质：本科毕业设计
+本项目实现了一个基于本地训练 SimCSE 句向量模型的中文检索式对话系统。系统流程涵盖数据预处理、模型训练、语料编码、检索匹配与 Web 交互，所有核心环节均可本地复现，无需依赖外部 API。
 
-## 项目简介
-本项目实现了一个中文检索式对话系统。系统以“从0训练”的字符级 SimCSE 句向量模型为核心，结合双模块检索策略，对用户输入与语料库候选问答进行匹配并返回最相关回复。
+**主要特性：**
+- 支持从零训练字符级 SimCSE 句向量模型，适配中文对话场景
+- 采用高效的语料预处理与问答对抽取脚本，支持大规模数据
+- 检索模块结合语义相似度与多特征融合，提升匹配准确率
+- 提供 Gradio Web 界面，便于交互测试
 
-当前实现不是生成式对话，而是“语义检索 + 阈值兜底”：先把语料编码成向量，再对用户输入做相似度匹配，最后输出最高分对应答句。
+# 系统流程
 
-## 系统流程
-1. 从 `system/data/raw_dialogues.txt` 提取或整理原始问答数据。
-2. 通过 `system/src/preprocess.py` 清洗文本并生成 `corpus.csv`。
-3. 通过 `system/src/data_loader.py` 读取结构化问答对。
-4. 通过 `system/train_simcse.py` 从0训练本地模型（生成 `model/my-simcse`）。
-5. 通过 `system/src/model.py` 加载本地模型并生成句向量。
-6. 通过 `system/src/matcher.py` 并行计算两种模块分数并选择最高分：
-   - 问句-问句匹配（语义 + 字符重叠 + ngram + 长度）
-   - 词向量问答匹配（问句词向量与问句/答句词向量联合打分）
-7. 通过 `system/app.py` 启动 Gradio Web 界面进行交互。
+1. **数据准备**
+   - 运行 `system/process_lccc.py` 从 LCCC-base-split 目录提取原始对话，生成 `data/raw_dialogues_train.txt`、`data/raw_dialogues_test.txt`
+   - 运行 `system/src/preprocess.py` 清洗文本，生成标准 `corpus_train.csv`、`corpus_test.csv`
 
-## 目录说明
-- `system/app.py`：程序入口，负责启动预处理、加载模型、构建匹配器和 Web 界面。
-- `system/src/config.py`：统一配置，包括路径、阈值、池化策略和温度参数。
-- `system/src/preprocess.py`：把原始对话文本清洗成标准 CSV。
-- `system/src/data_loader.py`：读取 `corpus.csv` 并返回问句与答句列表。
-- `system/src/model.py`：本地模型编码器，负责句向量生成与语义打分。
-- `system/src/matcher.py`：检索核心，负责缓存、双模块分数计算和最终决策。
-- `system/src/scratch_simcse.py`：字符级词表、模型结构与批处理编码工具。
-- `system/train_simcse.py`：从0开始无监督训练脚本（含验证、断点、日志）。
-- `system/process_lccc.py`：从 LCCC 解压目录提取对话语料。
-- `system/test_two_modules.py`：双模块打分测试脚本。
+2. **模型训练**
+   - 运行 `system/train_simcse.py`，使用本地 CSV 语料从零训练 SimCSE 模型，产出 `model/my-simcse` 目录（含权重、词表、日志、配置）
+   - 支持断点续训、混合精度、自动保存最佳模型
 
-## 运行方式
-建议先进入 `system` 目录再执行命令。
+3. **语料编码与检索**
+   - 运行 `system/src/model.py` 加载本地模型，将语料批量编码为句向量
+   - 运行 `system/src/matcher.py`，对用户输入与语料进行多特征融合检索，返回最优回复
 
-```bash
-pip install -r requirements.txt
-python app.py
-```
+4. **Web 交互**
+   - 运行 `system/app.py` 启动 Gradio Web 界面，支持输入问句、查看检索结果
 
-如果你需要先生成语料：
+5. **微调/增量训练**
+   - 可用 `--resume-checkpoint` 参数加载已有模型，配合较小学习率和轮次进行微调
 
-```bash
-python process_lccc.py
-python src/preprocess.py
-```
+# 目录结构说明
 
-如果你需要重新训练 SimCSE：
+- `system/app.py`：主入口，集成模型加载、检索与 Web 服务
+- `system/process_lccc.py`：LCCC 数据抽取脚本
+- `system/src/preprocess.py`：文本清洗与标准化
+- `system/src/data_loader.py`：CSV 语料加载
+- `system/src/model.py`：本地 SimCSE 编码器
+- `system/src/matcher.py`：检索与多特征融合
+- `system/src/scratch_simcse.py`：模型结构与词表工具
+- `system/train_simcse.py`：训练脚本
+- `system/data/`：存放中间语料、编码结果
+- `model/my-simcse/`：本地模型权重、词表、训练日志
 
-```bash
-python train_simcse.py
-```
+# 运行方式
 
-## 测试
-运行双模块测试：
+1. 安装依赖
+   ```bash
+   pip install -r requirements.txt
+   ```
 
-```bash
-python test_two_modules.py
-```
+2. 数据处理
+   ```bash
+   python process_lccc.py
+   python src/preprocess.py
+   ```
 
-## 重要说明
-1. 当前项目默认只使用本地模型目录 `system/model/my-simcse`。
-2. `system/data/corpus.csv`、`system/data/corpus_embeddings.pt` 和本地模型文件属于生成产物，通常不建议提交到仓库。
-3. 推理与测试脚本依赖已训练模型文件：`model.pt` 与 `vocab.json`。
+3. 训练模型（正式训练推荐参数，已为默认）
+   ```bash
+   python train_simcse.py --save-best --save-last --use-amp
+   ```
+
+4. 启动 Web 服务
+   ```bash
+   python app.py
+   ```
+
+5. 微调/增量训练（举例）
+   ```bash
+   python train_simcse.py --resume-checkpoint model/my-simcse/best.pt --lr 1e-4 --epochs 3 --save-best --use-amp
+   ```
+
+# 预训练模型参数（默认配置）
+
+| 参数              | 默认值      | 说明                         |
+|-------------------|------------|------------------------------|
+| epochs            | 10         | 训练轮次                     |
+| batch-size        | 128        | 批大小                       |
+| max-length        | 64         | 输入句子最大长度             |
+| lr                | 5e-4       | 学习率                       |
+| warmup-ratio      | 0.05       | 学习率 warmup 比例            |
+| temperature       | 0.05       | 对比学习温度                  |
+| min-freq          | 2          | 词表最小字符频次             |
+| max-vocab-size    | 0          | 词表最大字符数（0为不限制）   |
+| embed-dim         | 256        | 字符嵌入维度                  |
+| hidden-size       | 256        | GRU 隐层维度                  |
+| projection-dim    | 256        | 投影层维度                    |
+| dropout           | 0.2        | dropout 概率                  |
+| grad-accum-steps  | 2          | 梯度累积步数                  |
+| weight-decay      | 0.01       | AdamW 权重衰减                |
+| max-grad-norm     | 1.0        | 梯度裁剪阈值                  |
+| seed              | 42         | 随机种子                      |
+
+**微调建议：**
+- 降低 lr（如 1e-4），epochs 1–3，保持 batch-size、max-length、结构参数一致。
+- 使用 `--resume-checkpoint` 指定预训练模型。
+
+如需自定义参数，直接在命令行传入即可覆盖默认值。

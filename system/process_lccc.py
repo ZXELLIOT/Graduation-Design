@@ -1,118 +1,101 @@
 import os
 import json
-import random
+import time
 
-# 默认参数
-DEFAULT_JSON_FILENAME = "LCCC-base_train.json"
-DEFAULT_OUTPUT_TXT_PATH = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "data", "raw_dialogues.txt"
-)
-DEFAULT_SAMPLE_SIZE = 10000
-# 默认在项目根目录查找 LCCC 解压目录
-DEFAULT_WORK_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DEFAULT_DATASET_DIR_CANDIDATES = [
-    r"C:\Users\13713\个人信息\毕业设计\LCCC-base-split",
-    r"C:\Users\13713\个人信息\毕业设计\LCCC-large",
-    os.path.join(DEFAULT_WORK_DIR, "LCCC-base-split"),
-    os.path.join(DEFAULT_WORK_DIR, "LCCC-large"),
-]
+from tqdm.auto import tqdm
 
-JSON_FILENAME = DEFAULT_JSON_FILENAME
-OUTPUT_TXT_PATH = DEFAULT_OUTPUT_TXT_PATH
-SAMPLE_SIZE = DEFAULT_SAMPLE_SIZE
+# simcse-demo 目录与工作区根目录。
+SIMCSE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+WORKSPACE_DIR = os.path.dirname(SIMCSE_DIR)
+LCCC_BASE_DIR = os.path.join(WORKSPACE_DIR, "LCCC-base-split")
+TRAIN_JSON_PATH = os.path.join(LCCC_BASE_DIR, "LCCC-base_train.json")
+TEST_JSON_PATH = os.path.join(LCCC_BASE_DIR, "LCCC-base_test.json")
+
+OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+OUTPUT_TRAIN_TXT_PATH = os.path.join(OUTPUT_DIR, "raw_dialogues_train.txt")
+OUTPUT_TEST_TXT_PATH = os.path.join(OUTPUT_DIR, "raw_dialogues_test.txt")
 
 
-def _resolve_dataset_dir():
-    for candidate in DEFAULT_DATASET_DIR_CANDIDATES:
-        if os.path.exists(candidate):
-            return candidate
+def _extract_and_write(json_path: str, output_path: str, stage_name: str) -> int:
+    """从 JSON 全量提取问答对并直接写入 txt。"""
+    load_start = time.perf_counter()
+    with open(json_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    load_elapsed = time.perf_counter() - load_start
+    print(f"[{stage_name}] JSON 读取完成，session 数: {len(data)}，耗时: {load_elapsed:.2f} 秒")
 
-    # 兼容把解压目录放在脚本同级目录的情况
-    local_candidates = [
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), name)
-        for name in ("LCCC-base-split", "LCCC-large")
-    ]
-    for candidate in local_candidates:
-        if os.path.exists(candidate):
-            return candidate
+    # 提前建目录，避免长时间处理后才因为目录问题失败。
+    output_dir = os.path.dirname(output_path)
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
 
-    return DEFAULT_DATASET_DIR_CANDIDATES[0]
+    extract_start = time.perf_counter()
+    pair_count = 0
+    with open(output_path, "w", encoding="utf-8") as f:
+        # 给 session 层加进度条，处理进度和速度会实时显示。
+        for dialog_session in tqdm(
+            data,
+            total=len(data),
+            desc=f"{stage_name} 抽取进度",
+            unit="session",
+            dynamic_ncols=True,
+        ):
+            if not isinstance(dialog_session, list) or len(dialog_session) < 2:
+                continue
 
+            # 全量读取：一个 session 内所有相邻轮次都转成 Q/A。
+            for idx in range(len(dialog_session) - 1):
+                q = str(dialog_session[idx]).strip()
+                a = str(dialog_session[idx + 1]).strip()
+                if not q or not a:
+                    continue
 
-LCCC_DATASET_DIR = _resolve_dataset_dir()
+                # 统一替换制表符和换行，避免影响后续按列读取。
+                q = q.replace("\t", " ").replace("\n", " ")
+                a = a.replace("\t", " ").replace("\n", " ")
+                f.write(f"{q}\t{a}\n")
+                pair_count += 1
 
+    extract_elapsed = time.perf_counter() - extract_start
+    print(f"[{stage_name}] 问答对输出完成，共 {pair_count} 条，耗时: {extract_elapsed:.2f} 秒")
+    return pair_count
 
-def _resolve_json_path(dataset_dir: str) -> str:
-    """自动选择解压目录中的 train JSON 文件。"""
-    preferred_names = [
-        "LCCC-base_train.json",
-        "LCCC-large_train.json",
-    ]
-
-    for root, _, files in os.walk(dataset_dir):
-        for name in preferred_names:
-            if name in files:
-                return os.path.join(root, name)
-
-    # 回退：自动匹配以 train 结尾的 json 文件
-    for root, _, files in os.walk(dataset_dir):
-        for name in files:
-            lower_name = name.lower()
-            if lower_name.endswith(".json") and "train" in lower_name:
-                return os.path.join(root, name)
-
-    # 兼容旧默认值
-    return os.path.join(dataset_dir, JSON_FILENAME)
 
 def extract_lccc():
-    if not os.path.exists(LCCC_DATASET_DIR):
-        print(f"找不到 LCCC 数据集目录：{LCCC_DATASET_DIR}")
+    """读取固定的两个数据集并输出 train/test 两个 txt。"""
+    total_start = time.perf_counter()
+
+    if not os.path.exists(TRAIN_JSON_PATH):
+        print(f"找不到训练集文件：{TRAIN_JSON_PATH}")
+        return
+    if not os.path.exists(TEST_JSON_PATH):
+        print(f"找不到测试集文件：{TEST_JSON_PATH}")
         return
 
-    json_path = _resolve_json_path(LCCC_DATASET_DIR)
-    print(f"使用数据目录: {LCCC_DATASET_DIR}")
-    print(f"使用 JSON 文件: {json_path}")
+    print(f"训练集 JSON: {TRAIN_JSON_PATH}")
+    print(f"测试集 JSON: {TEST_JSON_PATH}")
 
-    print("开始从解压目录中加载 LCCC JSON 数据...")
-    try:
-        with open(json_path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-    except Exception as e:
-        print(f"JSON 解析失败：{e}")
-        return
+    print("开始处理训练集（全量）...")
+    train_count = _extract_and_write(
+        json_path=TRAIN_JSON_PATH,
+        output_path=OUTPUT_TRAIN_TXT_PATH,
+        stage_name="训练集",
+    )
 
-    # LCCC 格式解析：data 里面通常是一个 list，每项是一个单轮或多轮对话的句子 list
-    # 例如: [["你在干嘛", "在看电视", "看什么电视"], ["吃饭了吗", "刚吃完"]]
-    print(f"成功加载，共有 {len(data)} 个对话 session。正在提取相邻问答对...")
-    
-    qa_pairs = []
-    for dialog_session in data:
-        # 只取每个 session 的前两句话作为 Q（提问） 和 A（回答）
-        if isinstance(dialog_session, list) and len(dialog_session) >= 2:
-            q = dialog_session[0].strip()
-            a = dialog_session[1].strip()
-            
-            # 初步清洗：排除过长或过短的垃圾对话
-            if 2 <= len(q) <= 40 and 2 <= len(a) <= 40:
-                # 确保里面没有制表符（\t）和换行符
-                q = q.replace('\t', ' ').replace('\n', ' ')
-                a = a.replace('\t', ' ').replace('\n', ' ')
-                qa_pairs.append(f"{q}\t{a}\n")
+    print("开始处理测试集（全量）...")
+    test_count = _extract_and_write(
+        json_path=TEST_JSON_PATH,
+        output_path=OUTPUT_TEST_TXT_PATH,
+        stage_name="测试集",
+    )
 
-    print(f"共提取出 {len(qa_pairs)} 个初步符合长度要求的问答对。")
-    
-    # 抽取 SAMPLE_SIZE 条
-    print(f"正在随机抽取 {SAMPLE_SIZE} 条作为系统语料库...")
-    if len(qa_pairs) > SAMPLE_SIZE:
-        sampled_pairs = random.sample(qa_pairs, SAMPLE_SIZE)
-    else:
-        sampled_pairs = qa_pairs
-    
-    # 写入最终 txt 文件
-    with open(OUTPUT_TXT_PATH, 'w', encoding='utf-8') as f:
-        f.writelines(sampled_pairs)
-        
-    print(f"\n已成功提取 {len(sampled_pairs)} 条 LCCC 对话并写入 raw_dialogues.txt")
+    total_elapsed = time.perf_counter() - total_start
+
+    print(f"\n已输出训练语料: {OUTPUT_TRAIN_TXT_PATH}")
+    print(f"已输出测试语料: {OUTPUT_TEST_TXT_PATH}")
+    print(f"训练集问答对数量: {train_count}")
+    print(f"测试集问答对数量: {test_count}")
+    print(f"全部流程总耗时: {total_elapsed:.2f} 秒")
 
 if __name__ == "__main__":
     extract_lccc()
