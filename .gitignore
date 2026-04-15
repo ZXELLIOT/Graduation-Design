@@ -1,43 +1,33 @@
-# Python 编译与缓存
+# Python cache and compiled files
 __pycache__/
 *.py[cod]
 *$py.class
-*.pyc
 
-# 虚拟环境
+# Virtual environments
+.env
+.venv
 venv/
-.venv/
+ENV/
 env/
 
-# 编辑器/IDE
-.vscode/
-.idea/
-
-# 操作系统临时文件
-.DS_Store
-
-# 日志与临时文件
-*.log
-logs/
-
-# Jupyter
-.ipynb_checkpoints/
-*.ipynb
-
-# 模型与数据缓存（根据项目路径选择是否忽略）
-# 忽略大体积的向量文件与模型权重，防止误提交
-system/data/*.pt
-system/data/*.pth
-system/model/
-*.pt
-*.pth
-*.bin
-
-# Hugging Face 本地缓存（如有）
-.cache/huggingface/
-.cache/
-
-# 包与构建产物
+# Distribution / packaging
 build/
 dist/
 *.egg-info/
+
+# Model and data files
+*.pt
+*.bin
+*.safetensors
+system/model/
+system/data/
+
+# Jupyter
+.ipynb_checkpoints
+
+# IDE
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db

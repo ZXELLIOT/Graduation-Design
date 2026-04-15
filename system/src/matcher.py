@@ -4,6 +4,7 @@ import time
 import torch
 import torch.nn.functional as F
 import numpy as np
+from tqdm.auto import tqdm
 
 class DialogMatcher:
     def __init__(self, encoder, queries=None, replies=None, cache_dir=None, similarity_threshold=0.5, enable_fallback=True, fallback_top_k=3):
@@ -19,79 +20,49 @@ class DialogMatcher:
         - fallback_top_k: 备用回复候选数量限制。
         """
         self.encoder = encoder
-        # queries/replies 可选（当缓存中包含文本时可以省略），但 cache_dir 必须提供以便加载 embeddings
         self.queries = queries
         self.replies = replies
         self.cache_dir = cache_dir or os.getcwd()
         self.similarity_threshold = similarity_threshold
         self.enable_fallback = enable_fallback
         self.fallback_top_k = fallback_top_k
-
-        # 尝试加载缓存（包含向量与可选的文本映射）；若缺失则计算并保存
         self.query_embeddings, self.reply_embeddings = self._load_or_create_embeddings()
 
-    def _normalize_embeddings(self, embeddings):
-        """统一对嵌入向量进行L2归一化"""
-        if isinstance(embeddings, np.ndarray):
-            embeddings = torch.from_numpy(embeddings)
-        elif isinstance(embeddings, list):
-            embeddings = torch.stack(embeddings)
-        elif not isinstance(embeddings, torch.Tensor):
-            embeddings = torch.tensor(embeddings)
-        
-        embeddings = embeddings.float()
-        # 重要：确保在归一化前处理NaN和inf值
-        embeddings = torch.nan_to_num(embeddings, nan=0.0, posinf=1.0, neginf=-1.0)
-        return F.normalize(embeddings, p=2, dim=1)
-
     def _load_or_create_embeddings(self):
-        """检查并加载向量缓存，若不存在则计算并保存。"""
+        """检查并加载向量缓存，若不存在则计算并保存"""
         query_vec_path = os.path.join(self.cache_dir, 'train_query_embeddings.pt')
         reply_vec_path = os.path.join(self.cache_dir, 'train_reply_embeddings.pt')
         queries_path = os.path.join(self.cache_dir, 'train_queries.pt')
         replies_path = os.path.join(self.cache_dir, 'train_replies.pt')
         
         if os.path.exists(query_vec_path) and os.path.exists(reply_vec_path):
-            print(f"检测到已存在的缓存文件，正在加载 embeddings...")
+            print(f"检测到已存在的缓存文件，正在加载")
             try:
                 query_embeddings = torch.load(query_vec_path, map_location='cpu')
                 reply_embeddings = torch.load(reply_vec_path, map_location='cpu')
-                # 如果构造时未提供文本，从缓存中加载文本映射（若存在）
-                if (self.queries is None or self.replies is None) and os.path.exists(queries_path) and os.path.exists(replies_path):
-                    try:
-                        self.queries = torch.load(queries_path)
-                        self.replies = torch.load(replies_path)
-                        print("文本映射从缓存加载成功！")
-                    except Exception:
-                        print("警告：文本映射缓存存在但加载失败，仍会使用外部提供的文本（若有）。")
+                self.queries = torch.load(queries_path)
+                self.replies = torch.load(replies_path)
 
-                print(f"缓存加载成功！")
+                print(f"缓存加载成功")
             except Exception as e:
-                print(f"缓存加载失败，重新计算: {e}")
+                print(f"缓存加载失败: {e}")
                 return self._create_and_save_embeddings()
         else:
-            print(f"未找到缓存文件，正在计算并保存...")
+            print(f"未找到缓存文件，正在生成")
             return self._create_and_save_embeddings()
-        
-        # 确保向量为 float 并做 L2 归一化
-        query_embeddings = self._normalize_embeddings(query_embeddings)
-        reply_embeddings = self._normalize_embeddings(reply_embeddings)
         
         return query_embeddings, reply_embeddings
     
     def _create_and_save_embeddings(self):
         """计算并保存新的嵌入向量"""
-        # 在没有提供文本且缓存也不存在的情况下，无法计算 embeddings
         if self.queries is None or self.replies is None:
-            raise ValueError("缺少语料文本（queries/replies），无法生成 embeddings，请提供 CSV 或确保缓存存在。")
+            raise ValueError("缺少语料文本")
 
         encode_start_time = time.perf_counter()
 
-        # 为编码过程添加进度条，按 batch 分块编码以便显示进度
-        print(f"正在编码 {len(self.queries)} 个问题...")
+        print(f"正在编码 {len(self.queries)} 个问题")
         query_embeddings_list = []
-        batch_size = 64
-        from tqdm.auto import tqdm
+        batch_size = getattr(self, 'encode_batch_size', None) or 128
         for i in tqdm(range(0, len(self.queries), batch_size), desc="编码问题", unit="batch"):
             batch_texts = self.queries[i:i+batch_size]
             emb = self.encoder.encode(batch_texts, batch_size=batch_size)
@@ -99,57 +70,58 @@ class DialogMatcher:
         if len(query_embeddings_list) > 0:
             query_embeddings = torch.cat(query_embeddings_list, dim=0)
         else:
-            query_embeddings = torch.empty((0, self.encoder.model.config.hidden_size))
+            if hasattr(self.encoder, 'query_encoder'):
+                dim = getattr(self.encoder.query_encoder.config, 'hidden_size', 0)
+            elif hasattr(self.encoder, 'model'):
+                dim = getattr(self.encoder.model.config, 'hidden_size', 0)
+            else:
+                dim = 0
+            query_embeddings = torch.empty((0, dim))
 
-        print(f"正在编码 {len(self.replies)} 个回答...")
+        print(f"正在编码 {len(self.replies)} 个回答")
         reply_embeddings_list = []
         for i in tqdm(range(0, len(self.replies), batch_size), desc="编码回答", unit="batch"):
             batch_texts = self.replies[i:i+batch_size]
-            emb = self.encoder.encode(batch_texts, batch_size=batch_size)
+            emb = self.encoder.encode(batch_texts, batch_size=batch_size, encoder='response')
             reply_embeddings_list.append(emb)
         if len(reply_embeddings_list) > 0:
             reply_embeddings = torch.cat(reply_embeddings_list, dim=0)
         else:
-            reply_embeddings = torch.empty((0, self.encoder.model.config.hidden_size))
+            if hasattr(self.encoder, 'response_encoder'):
+                dim = getattr(self.encoder.response_encoder.config, 'hidden_size', 0)
+            elif hasattr(self.encoder, 'model'):
+                dim = getattr(self.encoder.model.config, 'hidden_size', 0)
+            else:
+                dim = 0
+            reply_embeddings = torch.empty((0, dim))
 
         encode_elapsed = time.perf_counter() - encode_start_time
 
-        print(f"编码完成，耗时: {encode_elapsed:.2f} 秒。正在保存缓存...")
+        print(f"编码完成，耗时: {encode_elapsed:.2f} 秒。正在保存缓存")
 
         os.makedirs(self.cache_dir, exist_ok=True)
         torch.save(query_embeddings, os.path.join(self.cache_dir, 'train_query_embeddings.pt'))
         torch.save(reply_embeddings, os.path.join(self.cache_dir, 'train_reply_embeddings.pt'))
-        # 同步保存文本映射
-        try:
-            if self.queries is not None and self.replies is not None:
-                torch.save(self.queries, os.path.join(self.cache_dir, 'train_queries.pt'))
-                torch.save(self.replies, os.path.join(self.cache_dir, 'train_replies.pt'))
-        except Exception:
-            print("警告：无法保存文本映射到缓存。")
+        torch.save(self.queries, os.path.join(self.cache_dir, 'train_queries.pt'))
+        torch.save(self.replies, os.path.join(self.cache_dir, 'train_replies.pt'))
 
         print(f"缓存已保存至: {self.cache_dir}")
-
-        # 归一化处理
-        query_embeddings = self._normalize_embeddings(query_embeddings)
-        reply_embeddings = self._normalize_embeddings(reply_embeddings)
 
         return query_embeddings, reply_embeddings
 
     def _cosine_similarity(self, a, b):
-        """
-        计算余弦相似度，假设输入向量已经归一化
-        Args:
-            a: shape (n, d) 或 (d,)
-            b: shape (m, d) 或 (d,)
-        Returns:
-            similarity: shape (n, m) 或 (n,) 或 (m,)
+        """计算余弦相似度（输入向量应已归一化）。
+
+        参数：
+        - a: 张量，形状可以为 (n, d) 或 (d,)；
+        - b: 张量，形状可以为 (m, d) 或 (d,)；
+        返回：相似度张量，形状为 (n, m) 或降维后的向量。
         """
         if a.dim() == 1:
             a = a.unsqueeze(0)
         if b.dim() == 1:
             b = b.unsqueeze(0)
         
-        # 由于向量已归一化，余弦相似度 = 点积
         return torch.matmul(a, b.transpose(0, 1))
 
     def match(self, user_input: str, top_k_for_rerank=5):
@@ -161,26 +133,22 @@ class DialogMatcher:
         Returns:
             tuple: (best_reply, best_score, matched_query)
         """
-        if not user_input or not user_input.strip():
-            return "请输入有效的内容。", 0.0, None
-
         if self.query_embeddings is None or not self.queries:
-            return "知识库为空，暂无法回答问题。", 0.0, None
-
-        # 编码用户输入并归一化 - 关键修复！
-        user_query_emb = self.encoder.encode([user_input])
-        user_query_emb = self._normalize_embeddings(user_query_emb)  # 确保用户输入向量也归一化
+            return "问句库为空，暂无法回答问题。", 0.0, None
+        if self.reply_embeddings is None or not self.replies:
+            return "答句库为空，暂无法回答问题。", 0.0, None
+        # 编码用户输入
+        user_query_emb = self.encoder.encode_one(user_input, encoder='query')
 
         # --- 第一阶段：问句匹配 ---
-        question_similarities = self._cosine_similarity(user_query_emb, self.query_embeddings)  # shape: (1, num_queries)
+        question_similarities = self._cosine_similarity(user_query_emb, self.query_embeddings) 
         if question_similarities.dim() > 1:
-            question_similarities = question_similarities.squeeze(0)  # shape: (num_queries,)
+            question_similarities = question_similarities.squeeze(0) 
 
         # 取相似度最高的 top_k 个索引作为候选
         top_k = min(top_k_for_rerank, len(self.queries) if self.queries else 0)
         top_question_values, top_question_indices = torch.topk(question_similarities, k=top_k)
     
-
         # --- 第二阶段：答句重排序 ---
         # 1. 获取候选回答的向量
         candidate_reply_indices = top_question_indices.cpu().numpy().tolist()
@@ -189,13 +157,9 @@ class DialogMatcher:
         # 2. 计算用户与候选回答的相似度
         response_similarities = self._cosine_similarity(user_query_emb, candidate_reply_embeddings).squeeze(0)
 
-        # 3. 【关键修改】计算加权总分
-        # 获取对应的问句分数 (从 top_question_values 中取)
-        # 注意：top_question_values 已经是排序好的，直接对应 candidate_reply_indices 的顺序
+        # 3. 计算加权总分，问句分 * 0.5 + 回答分 * 0.5
         q_scores = top_question_values.cpu() 
         a_scores = response_similarities.cpu()
-
-        # 混合打分：问句分 * 0.5 + 回答分 * 0.5
         final_scores = (q_scores * 0.5) + (a_scores * 0.5)
 
         # 4. 找到加权后分数最高的
@@ -204,23 +168,18 @@ class DialogMatcher:
         
         # 最终得分使用加权分
         best_score = final_scores[best_idx_in_list].item()
-        
-        if not self.replies or not self.queries:
-            return "知识库为空，暂无法回答问题。", 0.0, None
         best_reply = self.replies[best_global_idx]
         matched_query = self.queries[best_global_idx]
 
-        
         # 阈值判断
         if best_score < self.similarity_threshold:
             if self.enable_fallback:
-                # 构建 fallback 回复
                 snippets = []
                 scores = top_question_values.cpu().numpy().tolist()
                 indices = top_question_indices.cpu().numpy().tolist()
                 
                 for score, idx in zip(scores, indices):
-                    if score < self.similarity_threshold * 0.7:  # 只考虑相对相关的
+                    if score < self.similarity_threshold * 0.7: 
                         continue
                     reply = (self.replies[idx] or "").strip()
                     if reply and reply not in snippets:

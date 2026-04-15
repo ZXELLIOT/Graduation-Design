@@ -5,7 +5,6 @@ import csv
 import re
 from tqdm.auto import tqdm
 
-# --- 配置区域 ---
 LCCC_BASE_DIR = r"C:\\Users\\13713\\个人信息\\毕业设计\\LCCC-base-split"
 TRAIN_JSON_PATH = os.path.join(LCCC_BASE_DIR, "LCCC-base_train.json")
 VALID_JSON_PATH = os.path.join(LCCC_BASE_DIR, "LCCC-base_valid.json")   
@@ -17,7 +16,6 @@ OUTPUT_TRAIN_CSV = os.path.join(OUTPUT_DIR, "lccc_train.csv")
 OUTPUT_VALID_CSV = os.path.join(OUTPUT_DIR, "lccc_valid.csv")
 OUTPUT_TEST_CSV = os.path.join(OUTPUT_DIR, "lccc_test.csv")
 
-# --- 数据清洗逻辑 ---
 def clean_text(text):
     """
     清洗文本：
@@ -30,8 +28,7 @@ def clean_text(text):
     # 1. 去除首尾空白
     text = text.strip()
     
-    # 2. 修复中文词语与标点符号间的空格，特别是连续单字空格
-    # 匹配一个或多个由空格分隔的中文字符或标点符号序列，并移除其中的空格
+    # 2. 匹配一个或多个由空格分隔的中文字符或标点符号序列，并移除其中的空格
     text = re.sub(
         r'[\u4e00-\u9fff\u3000-\u303f\uff00-\uffef](?:\s+[\u4e00-\u9fff\u3000-\u303f\uff00-\uffef])*',
         lambda m: m.group(0).replace(' ', ''),
@@ -60,7 +57,7 @@ def _process_json_to_csv(json_path, output_csv_path, stage_name):
     读取单个 JSON 文件，清洗数据，并保存为 CSV
     """
     if not os.path.exists(json_path):
-        print(f"警告：文件不存在 - {json_path}")
+        print(f"文件不存在 - {json_path}")
         return 0
 
     try:

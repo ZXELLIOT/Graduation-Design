@@ -1,13 +1,12 @@
 import os
 import sys
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-
 import gradio as gr
+
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from src.model import SimCSEEncoder
 from src.data_loader import DataLoader
 from src.matcher import DialogMatcher
 
-# --- 配置项 ---
 SIMILARITY_THRESHOLD = 0.5
 ENABLE_FALLBACK_REPLY = True
 FALLBACK_TOP_K = 3
@@ -15,7 +14,15 @@ TRAIN_CSV_PATH = r"C:\Users\13713\个人信息\毕业设计\simcse-demo\system\d
 CACHE_DIR = r"C:\Users\13713\个人信息\毕业设计\simcse-demo\system\data"
 
 def initialize_system():
-    # 欢迎信息（用于在控制台显示）
+    """
+    初始化并返回用于检索回复的匹配组件实例。
+
+    说明：
+    1. 加载语义编码器；
+    2. 检查并尝试加载本地缓存；若无缓存则从语料生成并保存；
+    3. 用编码器与语料初始化匹配组件并返回。
+    返回值：匹配组件实例（可用于在线查询）。
+    """
     print("==========================================================")
     print("                  检索式中文对话系统 启动中               ")
     print("==========================================================\n")
@@ -24,7 +31,7 @@ def initialize_system():
     print("[1/4] 加载语义编码器...")
     encoder = SimCSEEncoder()
 
-    # 2. 检查本地缓存：若同时存在向量与文本映射则使用缓存以加速启动
+    # 2. 检查本地缓存：若同时存在向量与文本映射则使用缓存
     print("[2/4] 检查本地缓存...")
     query = None
     response = None
@@ -36,10 +43,9 @@ def initialize_system():
     use_cache = os.path.exists(query_vec) and os.path.exists(reply_vec) and os.path.exists(queries_pkl) and os.path.exists(replies_pkl)
 
     if use_cache:
-        print("检测到有效缓存（向量与文本映射），将直接使用缓存以加速启动。")
+        print("检测到有效缓存")
     else:
-        print("未检测到有效缓存，正在从语料文件加载并准备生成缓存（如适用）...")
-        # 直接从 CSV 加载语料（内部已带进度提示）
+        print("未检测到有效缓存，正在从语料文件加载并生成缓存")
         query, response = DataLoader.load_corpus(TRAIN_CSV_PATH, n_samples=100000)
 
     # 3. 初始化匹配器：匹配器内部会决定是否从缓存加载或重新生成缓存
@@ -73,36 +79,31 @@ def get_dialog_matcher():
     return dialog_matcher_instance
 
 def predict(user_input: str, history: list) -> str:
+    """处理一次用户输入并返回回复。
+
+    参数：
+    - user_input: 用户输入的文本；
+    - history: 对话历史（当前未使用，仅保留接口一致性）。
+
+    返回：
+    - 字符串形式的回复；若未找到可信答案，会返回提示并附带简短诊断信息。
     """
-    接收用户输入，计算相似度并返回最佳匹配回复。
-    """
-    # gradio 会传入历史消息，这里保留接口但不参与检索。
     _ = history
 
     normalized_input = (user_input or "").strip()
     if not normalized_input:
-        return "请输入有效的内容。"
+        return "请输入有效的内容"
 
-    # [5] 在判断函数中调用 match
+    # 在此处按需初始化匹配器并进行检索
     matcher = get_dialog_matcher()
-    
-    # 调用 matcher 实例的 match 方法
+
     reply, score, matched_q = matcher.match(user_input, top_k_for_rerank=5)
-    
-    # 附带诊断信息，便于观察命中结果和分数。
+
     if matched_q:
-        diagnostic_log = (
-            f"\n\n> 匹配问句:「*{matched_q}*」"
-            f" | 相似度: **{score:.4f}**"
-            f" | 模块: **{selected_method}**"
-        )
+        diagnostic_log = f"\n\n> 匹配问题:「{matched_q}」 ｜ 相似度: {score:.4f}"
     else:
-        diagnostic_log = (
-            "\n\n> 当前相似度得分低于设定阈值，已返回基于相近语料整理的参考回答"
-            f" | 最大相似度: **{score:.4f}**"
-            f" | 模块: **{selected_method}**"
-        )
-        
+        diagnostic_log = f"\n\n> 未匹配到高置信度答案，最高相似度: {score:.4f}"
+
     return reply + diagnostic_log
 
 # 构建 Web 界面
@@ -110,8 +111,7 @@ demo = gr.ChatInterface(
     fn=predict,
     title="检索式中文对话系统 (SimCSE)",
     description=(
-        "**计算机专业本科毕业设计** | **核心架构:** 字符级句向量模型与余弦相似度检索。\n"
-        "系统使用 LCCC 语料进行检索，并在本地缓存句子特征向量以提高启动和响应速度。"
+        "系统使用 LCCC 语料进行检索。"
     ),
     examples=["最近有什么好看的电影推荐吗？", "毕业设计进度有点卡住了，好焦虑", "今天天气真不错～"],
 )

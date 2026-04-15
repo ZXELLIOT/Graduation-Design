@@ -3,6 +3,7 @@ from tqdm.auto import tqdm
 
 
 class DataLoader:
+    """用于从本地 CSV 文件读取并整理问答语料的工具类。"""
     @staticmethod
     def load_corpus(csv_path, n_samples=None, random_state=42):
         """
@@ -20,10 +21,9 @@ class DataLoader:
         df = pd.read_csv(csv_path)
 
         if n_samples is not None and len(df) > n_samples:
-            print(f"将随机抽取 {n_samples} 条样本以加快处理。")
+            print(f"随机抽取 {n_samples} 条样本处理。")
             df = df.sample(n=n_samples, random_state=random_state).reset_index(drop=True)
 
-        # 逐行构建问答列表，并显示进度
         queries = []
         responses = []
         for _, row in tqdm(df.iterrows(), total=len(df), desc="构建语料列表", unit="rows"):

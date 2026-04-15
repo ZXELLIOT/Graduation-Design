@@ -1,71 +1,41 @@
-# simcse_encoder.py (修复版本)
+# simcse_encoder.py
 import os
+import time
 import numpy as np
 import torch
 from transformers import AutoModel, AutoTokenizer
 
-# 默认优先使用项目本地模型目录（若存在）
-# 本地模型目录路径相对于本文件上级目录的 `model/`
-LOCAL_MODEL_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'model'))
-
-def _detect_local_model(path: str) -> bool:
-    """检测指定路径下是否存在可用的模型文件（简单检查）。"""
-    if not path:
-        return False·
-    if not os.path.isdir(path):
-        return False
-    # 只要存在配置或权重文件之一，即视为本地模型目录
-    candidates = ['config.json', 'pytorch_model.bin', 'tf_model.h5', 'flax_model.msgpack']
-    for c in candidates:
-        if os.path.exists(os.path.join(path, c)):
-            return True
-    return False
-
-# --- 模型配置 ---
-MODEL_NAME = "shibing624/text2vec-base-chinese"
-MAX_LENGTH = 128  # 输入文本最大长度，超长会截断
-SENTENCE_POOLING = "cls"  # 句向量聚合方式: "cls"
-SIMCSE_TEMPERATURE = 0.05 # 相似度计算温度参数
-# --- 配置结束 ---
+MODEL_DIR = r"C:\Users\13713\个人信息\毕业设计\simcse-demo\system\model\mysimcse"
+MAX_LENGTH = 128
+SENTENCE_POOLING = "cls"
 
 class SimCSEEncoder:
-    def __init__(self, model_name=None):
-        """
-        初始化 SimCSE 编码器
-        
-        Args:
-            model_name (str, optional): HuggingFace 模型名称或本地路径。
-                                      如果为 None，则使用默认的开源模型。
-        """
-        # 允许传入不同的模型名称
-        self.model_name = model_name or MODEL_NAME
-        print(f"正在加载模型: {self.model_name}")
-        
-        # 1. 决定是否使用本地模型目录
-        local_path_used = False
-        if model_name and _detect_local_model(model_name):
-            self.model_name = model_name
-            local_path_used = True
-        elif not model_name and _detect_local_model(LOCAL_MODEL_DIR):
-            self.model_name = LOCAL_MODEL_DIR
-            local_path_used = True
+    def __init__(self):
+        """加载本地模型并准备编码器。
 
-        # 2. 加载分词器与模型
-        # 如果使用本地模型，则以离线模式加载（local_files_only=True）以避免联网请求
-        local_files_only = True if local_path_used else False
-        print(f"分词器加载路径: {self.model_name} (local_files_only={local_files_only})")
-        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, local_files_only=local_files_only)
-        self.model = AutoModel.from_pretrained(self.model_name, local_files_only=local_files_only)
-        
-        # 3. 选择计算设备
+        要求：在常量 MODEL_DIR 指定的位置存在已导出的模型目录。
+        初始化后可调用 `encode` 与 `encode_one` 将文本转换为向量。
+        """
+        self.model_dir = MODEL_DIR
+        if not self.model_dir or not os.path.isdir(self.model_dir):
+            raise FileNotFoundError(
+                f"本地模型目录不存在或不完整：{self.model_dir}。"
+            )
+        # 加载 模型和分词器
+        print(f"加载本地模型: {self.model_dir} (local_files_only=True)")
+        self.tokenizer = AutoTokenizer.from_pretrained(self.model_dir, local_files_only=True)
+        q_dir = os.path.join(self.model_dir, 'query_encoder')
+        r_dir = os.path.join(self.model_dir, 'response_encoder')
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        print(f"使用设备: {self.device.type.upper()}")
-        self.model.to(self.device)
-        
-        # 4. 设置模型状态
+        self.query_encoder = AutoModel.from_pretrained(q_dir, local_files_only=True)
+        self.response_encoder = AutoModel.from_pretrained(r_dir, local_files_only=True)
+        self.query_encoder.to(self.device)
+        self.response_encoder.to(self.device)
+        self.query_encoder.eval()
+        self.response_encoder.eval()
+        self._single_model = False
         self.pooling = SENTENCE_POOLING
-        self.model.eval()
-        print(f"模型加载完毕 | Pooling Strategy: {self.pooling}")
+        print(f"模型加载完成，设备: {self.device}, pooling={self.pooling}")
 
     def _l2_normalize(self, embeddings, eps=1e-8):
         """
@@ -77,15 +47,18 @@ class SimCSEEncoder:
             embeddings = torch.tensor(embeddings)
             
         embeddings = embeddings.float()
-        # 处理NaN和inf值
         embeddings = torch.nan_to_num(embeddings, nan=0.0, posinf=1.0, neginf=-1.0)
-        
+
+        if embeddings.ndim == 1:
+            norm = torch.linalg.vector_norm(embeddings, ord=2)
+            return embeddings / torch.clamp(norm, min=eps)
+
         norms = torch.linalg.vector_norm(embeddings, ord=2, dim=1, keepdim=True)
         return embeddings / torch.clamp(norms, min=eps)
 
     def _masked_mean_pool(self, token_embeddings, attention_mask, eps=1e-8):
         """
-        基于 attention_mask 的加权平均池化，用于忽略填充 (padding) 部分。
+        基于 attention_mask 的加权平均池化
         """
         mask = attention_mask.unsqueeze(-1).type_as(token_embeddings)
         masked_embeddings = token_embeddings * mask
@@ -95,7 +68,7 @@ class SimCSEEncoder:
 
     def _sentence_pooling(self, outputs, attention_mask):
         """
-        根据设定的策略，从模型的输出中提取整句的向量表示。
+        从模型的输出中提取整句的向量表示。
         """
         if self.pooling == "cls":
             return outputs.last_hidden_state[:, 0]
@@ -112,33 +85,85 @@ class SimCSEEncoder:
 
         raise ValueError(f"不支持的 pooling 策略: {self.pooling}")
 
-    def encode(self, texts, batch_size=32):
+    def encode(self, texts, batch_size=32, encoder: str = 'query', return_numpy: bool = False):
         """
         将文本列表转换为语义向量。
+        参数：
+        - texts: 单条字符串或字符串列表；
+        - batch_size: 编码时使用的批次大小；
+        - encoder: 指定使用哪一套编码器，取值为 'query' 或 'response'；
+        - return_numpy: 若为 True 则返回 CPU 上的 numpy 数组，否则返回 torch 张量。
+        返回：形状为 (样本数, 向量维度) 的向量集合。
         """
         if isinstance(texts, str):
             texts = [texts]
-        
+
+        if encoder not in ("query", "response"):
+            raise ValueError("encoder 参数只接受 'query' 或 'response'")
+
+        model = self.query_encoder if encoder == 'query' else self.response_encoder
+
         all_embeddings = []
         for i in range(0, len(texts), batch_size):
             batch_texts = texts[i:i + batch_size]
-            
             inputs = self.tokenizer(
                 batch_texts,
                 padding=True,
                 truncation=True,
                 return_tensors="pt",
                 max_length=MAX_LENGTH
-            ).to(self.device)
-            
+            )
+            inputs = {k: v.to(self.device) for k, v in inputs.items()}
+
             with torch.no_grad():
                 need_hidden_states = self.pooling == "first_last_avg"
-                outputs = self.model(**inputs, output_hidden_states=need_hidden_states)
-                
+                if self.device.type == 'cuda':
+                    try:
+                        from torch.cuda.amp import autocast
+                        with autocast():
+                            outputs = model(**inputs, output_hidden_states=need_hidden_states)
+                    except Exception:
+                        outputs = model(**inputs, output_hidden_states=need_hidden_states)
+                else:
+                    outputs = model(**inputs, output_hidden_states=need_hidden_states)
+
                 embeddings = self._sentence_pooling(outputs, inputs["attention_mask"])
-                
                 embeddings = self._l2_normalize(embeddings)
-                
                 all_embeddings.append(embeddings.cpu())
-                
-        return torch.cat(all_embeddings, dim=0)
+
+        merged = torch.cat(all_embeddings, dim=0) if all_embeddings else torch.empty((0, 0))
+        return merged.numpy() if return_numpy else merged
+
+    def encode_one(self, text, encoder: str = 'query', return_numpy: bool = False):
+        """对单条文本进行编码并返回向量。
+
+        参数：
+        - text: 待编码的文本；
+        - encoder: 使用的编码器，'query' 或 'response'；
+        - return_numpy: 若为 True 返回 numpy 数组。
+        返回：一维向量（torch 张量或 numpy 数组）。
+        """
+        if encoder not in ("query", "response"):
+            raise ValueError("encoder must be 'query' or 'response'")
+
+        model = self.query_encoder if encoder == 'query' else self.response_encoder
+
+        inputs = self.tokenizer(
+            text,
+            padding=True,
+            truncation=True,
+            return_tensors="pt",
+            max_length=MAX_LENGTH
+        )
+        inputs = {k: v.to(self.device) for k, v in inputs.items()}
+
+        with torch.no_grad():
+            need_hidden_states = self.pooling == "first_last_avg"
+            outputs = model(**inputs, output_hidden_states=need_hidden_states)
+            emb = self._sentence_pooling(outputs, inputs["attention_mask"])
+            emb = self._l2_normalize(emb)
+            emb = emb.cpu()
+
+        if return_numpy:
+            return emb.numpy().reshape(-1)
+        return emb.reshape(-1)
