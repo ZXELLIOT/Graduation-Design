@@ -1,49 +1,76 @@
 import os
 import sys
-
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 import gradio as gr
-
-from src.data_loader import DataLoader
 from src.model import SimCSEEncoder
+from src.data_loader import DataLoader
 from src.matcher import DialogMatcher
-from src.preprocess import TextPreprocessor
+
+# --- 配置项 ---
+SIMILARITY_THRESHOLD = 0.5
+ENABLE_FALLBACK_REPLY = True
+FALLBACK_TOP_K = 3
+TRAIN_CSV_PATH = r"C:\Users\13713\个人信息\毕业设计\simcse-demo\system\data\lccc_train.csv"
+CACHE_DIR = r"C:\Users\13713\个人信息\毕业设计\simcse-demo\system\data"
 
 def initialize_system():
+    # 欢迎信息（用于在控制台显示）
     print("==========================================================")
-    print("             基于 SimCSE 的检索式中文对话系统           ")
+    print("                  检索式中文对话系统 启动中               ")
     print("==========================================================\n")
 
-    print("[1/4] 执行语料数据预处理...")
-    preprocessor = TextPreprocessor()
-    preprocessor.process()
-
-    print("\n[2/4] 加载对话语料...")
-    data_loader = DataLoader()
-    queries, replies = data_loader.load_corpus()
-
-    print("\n[3/4] 初始化 SimCSE 语义模型...")
+    # 1. 初始化编码器模型
+    print("[1/4] 加载语义编码器...")
     encoder = SimCSEEncoder()
 
-    print("\n[4/4] 构建句子特征向量与匹配索引...")
-    # 尝试加载缓存加速启动，否则全量计算
-    matcher = DialogMatcher(encoder, queries, replies)
-    
-    print("\n[√] 系统核心模块加载完成，准备启动 Web 界面...\n")
+    # 2. 检查本地缓存：若同时存在向量与文本映射则使用缓存以加速启动
+    print("[2/4] 检查本地缓存...")
+    query = None
+    response = None
+    query_vec = os.path.join(CACHE_DIR, 'train_query_embeddings.pt')
+    reply_vec = os.path.join(CACHE_DIR, 'train_reply_embeddings.pt')
+    queries_pkl = os.path.join(CACHE_DIR, 'train_queries.pt')
+    replies_pkl = os.path.join(CACHE_DIR, 'train_replies.pt')
+
+    use_cache = os.path.exists(query_vec) and os.path.exists(reply_vec) and os.path.exists(queries_pkl) and os.path.exists(replies_pkl)
+
+    if use_cache:
+        print("检测到有效缓存（向量与文本映射），将直接使用缓存以加速启动。")
+    else:
+        print("未检测到有效缓存，正在从语料文件加载并准备生成缓存（如适用）...")
+        # 直接从 CSV 加载语料（内部已带进度提示）
+        query, response = DataLoader.load_corpus(TRAIN_CSV_PATH, n_samples=100000)
+
+    # 3. 初始化匹配器：匹配器内部会决定是否从缓存加载或重新生成缓存
+    print("[3/4] 初始化匹配组件并加载/生成缓存...")
+    matcher = DialogMatcher(
+        encoder=encoder,
+        queries=query,
+        replies=response,
+        cache_dir=CACHE_DIR,
+        similarity_threshold=SIMILARITY_THRESHOLD,
+        enable_fallback=ENABLE_FALLBACK_REPLY,
+        fallback_top_k=FALLBACK_TOP_K
+    )
+
+    # 4. 完成信息
+    total_pairs = len(matcher.queries) if matcher and matcher.queries is not None else 0
+    print(f"[4/4] 语料处理完成，共 {total_pairs} 条问答对。")
+    print("系统核心模块加载完成，准备启动界面...\n")
+
+    # 返回匹配器实例以供后续调用
     return matcher
 
 # 延迟初始化，避免导入模块时触发完整启动流程
-matcher = None
+dialog_matcher_instance = None
 
-
-def get_matcher():
-    """按需初始化并复用 matcher。"""
-    global matcher
-    if matcher is None:
-        matcher = initialize_system()
-    return matcher
-
+def get_dialog_matcher():
+    """按需初始化并复用对话匹配器实例。"""
+    global dialog_matcher_instance
+    if dialog_matcher_instance is None:
+        dialog_matcher_instance = initialize_system()
+    return dialog_matcher_instance
 
 def predict(user_input: str, history: list) -> str:
     """
@@ -52,7 +79,11 @@ def predict(user_input: str, history: list) -> str:
     if not user_input or not user_input.strip():
         return "请输入有效的内容。"
 
-    reply, score, matched_q = get_matcher().get_best_match(user_input)
+    # [5] 在判断函数中调用 match
+    matcher = get_dialog_matcher()
+    
+    # 调用 matcher 实例的 match 方法
+    reply, score, matched_q = matcher.match(user_input, top_k_for_rerank=5)
     
     if matched_q:
         diagnostic_log = f"\n\n> 匹配问句:「*{matched_q}*」| 相似度: **{score:.4f}**"
@@ -60,7 +91,6 @@ def predict(user_input: str, history: list) -> str:
         diagnostic_log = f"\n\n> 当前相似度得分低于设定阈值，无法给出准确回复 | 最大相似度: **{score:.4f}**"
         
     return reply + diagnostic_log
-
 
 # 构建 Web 界面
 demo = gr.ChatInterface(
@@ -76,8 +106,9 @@ demo = gr.ChatInterface(
 if __name__ == "__main__":
     # 启动界面
     try:
-        # 主进程启动前初始化一次，避免首条消息等待模型加载
-        get_matcher()
+        print("系统正在启动，请稍候...")
+        get_dialog_matcher()
+        print("系统就绪，正在启动 Web 界面...")
         demo.launch(server_name="127.0.0.1", server_port=7860, inbrowser=True)
     except Exception as e:
         print(f"启动界面失败: {e}")

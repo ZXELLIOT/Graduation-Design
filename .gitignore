@@ -1,29 +1,43 @@
-### AL ###
-#Template for AL projects for Dynamics 365 Business Central
-#launch.json folder
+# Python 编译与缓存
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+
+# 虚拟环境
+venv/
+.venv/
+env/
+
+# 编辑器/IDE
 .vscode/
-#Cache folder
-.alcache/
-#Symbols folder
-.alpackages/
-#Snapshots folder
-.snapshots/
-#Testing Output folder
-.output/
-#Extension App-file
-*.app
-#Rapid Application Development File
-rad.json
-#Translation Base-file
-*.g.xlf
-#License-file
-*.flf
-#Test results file
-TestResults.xml
-#pycache folders
-*.__pycache__/
-#data folders
-*.data/
-*.pt
-#log files
+.idea/
+
+# 操作系统临时文件
+.DS_Store
+
+# 日志与临时文件
 *.log
+logs/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# 模型与数据缓存（根据项目路径选择是否忽略）
+# 忽略大体积的向量文件与模型权重，防止误提交
+system/data/*.pt
+system/data/*.pth
+system/model/
+*.pt
+*.pth
+*.bin
+
+# Hugging Face 本地缓存（如有）
+.cache/huggingface/
+.cache/
+
+# 包与构建产物
+build/
+dist/
+*.egg-info/

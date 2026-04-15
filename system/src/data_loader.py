@@ -1,18 +1,34 @@
 import pandas as pd
-from src.config import CORPUS_PATH
+from tqdm.auto import tqdm
+
 
 class DataLoader:
-    def __init__(self, file_path=CORPUS_PATH):
-        self.file_path = file_path
+    @staticmethod
+    def load_corpus(csv_path, n_samples=None, random_state=42):
+        """
+        从 CSV 文件读取语料，并返回问句与回答列表。
 
-    def load_corpus(self):
-        """读取对话语料"""
-        try:
-            df = pd.read_csv(self.file_path, encoding='utf-8')
-            queries = df['query'].tolist()
-            replies = df['reply'].tolist()
-            print(f"成功加载语料库，共 {len(queries)} 条对话数据。")
-            return queries, replies
-        except Exception as e:
-            print(f"语料库加载失败。\n错误信息: {e}")
-            return [], []
+        参数说明：
+        - csv_path: CSV 文件路径。
+        - n_samples: 如指定，则从语料中随机抽取该数量样本。
+        - random_state: 随机种子，保证抽样可重复。
+
+        返回值：
+        - tuple (queries, responses)
+        """
+        print(f"正在读取语料文件：{csv_path} ...")
+        df = pd.read_csv(csv_path)
+
+        if n_samples is not None and len(df) > n_samples:
+            print(f"将随机抽取 {n_samples} 条样本以加快处理。")
+            df = df.sample(n=n_samples, random_state=random_state).reset_index(drop=True)
+
+        # 逐行构建问答列表，并显示进度
+        queries = []
+        responses = []
+        for _, row in tqdm(df.iterrows(), total=len(df), desc="构建语料列表", unit="rows"):
+            queries.append(str(row.get('query', '')))
+            responses.append(str(row.get('response', '')))
+
+        print(f"已构建 {len(queries)} 条问答样本。")
+        return queries, responses
