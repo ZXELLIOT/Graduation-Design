@@ -11,7 +11,7 @@ LOCAL_MODEL_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 
 def _detect_local_model(path: str) -> bool:
     """检测指定路径下是否存在可用的模型文件（简单检查）。"""
     if not path:
-        return False
+        return False·
     if not os.path.isdir(path):
         return False
     # 只要存在配置或权重文件之一，即视为本地模型目录

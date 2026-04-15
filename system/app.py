@@ -76,7 +76,11 @@ def predict(user_input: str, history: list) -> str:
     """
     接收用户输入，计算相似度并返回最佳匹配回复。
     """
-    if not user_input or not user_input.strip():
+    # gradio 会传入历史消息，这里保留接口但不参与检索。
+    _ = history
+
+    normalized_input = (user_input or "").strip()
+    if not normalized_input:
         return "请输入有效的内容。"
 
     # [5] 在判断函数中调用 match
@@ -85,10 +89,19 @@ def predict(user_input: str, history: list) -> str:
     # 调用 matcher 实例的 match 方法
     reply, score, matched_q = matcher.match(user_input, top_k_for_rerank=5)
     
+    # 附带诊断信息，便于观察命中结果和分数。
     if matched_q:
-        diagnostic_log = f"\n\n> 匹配问句:「*{matched_q}*」| 相似度: **{score:.4f}**"
+        diagnostic_log = (
+            f"\n\n> 匹配问句:「*{matched_q}*」"
+            f" | 相似度: **{score:.4f}**"
+            f" | 模块: **{selected_method}**"
+        )
     else:
-        diagnostic_log = f"\n\n> 当前相似度得分低于设定阈值，无法给出准确回复 | 最大相似度: **{score:.4f}**"
+        diagnostic_log = (
+            "\n\n> 当前相似度得分低于设定阈值，已返回基于相近语料整理的参考回答"
+            f" | 最大相似度: **{score:.4f}**"
+            f" | 模块: **{selected_method}**"
+        )
         
     return reply + diagnostic_log
 
@@ -97,8 +110,8 @@ demo = gr.ChatInterface(
     fn=predict,
     title="检索式中文对话系统 (SimCSE)",
     description=(
-        "**计算机专业本科毕业设计** | **核心架构:** 基于预训练深度对比学习模型与余弦相似度检索。\n"
-        "系统使用开源对话基准 LCCC 语料进行检索，并在本地缓存句子特征向量以提高启动和响应速度。"
+        "**计算机专业本科毕业设计** | **核心架构:** 字符级句向量模型与余弦相似度检索。\n"
+        "系统使用 LCCC 语料进行检索，并在本地缓存句子特征向量以提高启动和响应速度。"
     ),
     examples=["最近有什么好看的电影推荐吗？", "毕业设计进度有点卡住了，好焦虑", "今天天气真不错～"],
 )
