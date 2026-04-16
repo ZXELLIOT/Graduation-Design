@@ -12,6 +12,8 @@ ENABLE_FALLBACK_REPLY = True
 FALLBACK_TOP_K = 3
 TRAIN_CSV_PATH = r"C:\Users\13713\个人信息\毕业设计\simcse-demo\system\data\lccc_train.csv"
 CACHE_DIR = r"C:\Users\13713\个人信息\毕业设计\simcse-demo\system\data"
+IDENTITY_QUERY_KEYWORDS = ("你是什么", "你是谁")
+GREETING_KEYWORDS = ("你好", "您好", "嗨", "hello", "hi")
 
 def initialize_system():
     """
@@ -93,6 +95,12 @@ def predict(user_input: str, history: list) -> str:
     normalized_input = (user_input or "").strip()
     if not normalized_input:
         return "请输入有效的内容"
+
+    lowered_input = normalized_input.lower()
+    if any(keyword in normalized_input for keyword in IDENTITY_QUERY_KEYWORDS):
+        if any(greeting in lowered_input for greeting in GREETING_KEYWORDS):
+            return "你好！我是一个基于 SimCSE 的中文检索式对话系统，可以根据语义相似度为你检索参考回答。"
+        return "我是一个基于 SimCSE 的中文检索式对话系统，可以根据语义相似度为你检索参考回答。"
 
     # 在此处按需初始化匹配器并进行检索
     matcher = get_dialog_matcher()
