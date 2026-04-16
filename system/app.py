@@ -97,7 +97,7 @@ def predict(user_input: str, history: list) -> str:
         return "请输入有效的内容"
 
     lowered_input = normalized_input.lower()
-    if any(keyword in normalized_input for keyword in IDENTITY_QUERY_KEYWORDS):
+    if any(keyword in lowered_input for keyword in IDENTITY_QUERY_KEYWORDS):
         if any(greeting in lowered_input for greeting in GREETING_KEYWORDS):
             return "你好！我是一个基于 SimCSE 的中文检索式对话系统，可以根据语义相似度为你检索参考回答。"
         return "我是一个基于 SimCSE 的中文检索式对话系统，可以根据语义相似度为你检索参考回答。"
