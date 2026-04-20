@@ -1,6 +1,33 @@
-torch
-transformers
-pandas
-numpy
-tqdm
-gradio
+# 核心深度学习框架
+torch>=2.4.0
+transformers==5.5.4
+safetensors==0.7.0
+accelerate==1.13.0
+
+# 向量检索与数据库
+faiss-cpu>=1.7.0
+
+# 数据处理与科学计算
+numpy==2.4.4
+pandas==3.0.2
+scikit-learn==1.8.0
+scipy==1.17.1
+
+# 文本处理与分词
+jieba==0.42.1
+sentencepiece==0.2.1
+tokenizers==0.22.1
+
+# 进度条与实用工具
+tqdm==4.67.3
+requests==2.33.1
+python-dotenv==1.2.1
+psutil==7.2.2
+
+# 硬件监控 (针对 NVIDIA GPU)
+nvidia-ml-py==13.595.45
+
+# Web 接口与演示
+fastapi==0.135.2
+uvicorn==0.42.0
+gradio==6.10.0

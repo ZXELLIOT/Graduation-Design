@@ -1,7 +1,5 @@
 # Python cache and compiled files
 __pycache__/
-*.py[cod]
-*$py.class
 
 # Virtual environments
 .env
@@ -19,11 +17,9 @@ dist/
 *.pt
 *.bin
 *.safetensors
-system/model/
-system/data/
-
-# Jupyter
-.ipynb_checkpoints
+model/
+models/
+data/
 
 # IDE
 .vscode/

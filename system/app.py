@@ -1,116 +1,173 @@
 import os
 import sys
+import time
 import gradio as gr
+import faiss
+import pandas as pd
 
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-from src.model import SimCSEEncoder
-from src.data_loader import DataLoader
-from src.matcher import DialogMatcher
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(CURRENT_DIR)
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 
-SIMILARITY_THRESHOLD = 0.5
-ENABLE_FALLBACK_REPLY = True
-FALLBACK_TOP_K = 3
-TRAIN_CSV_PATH = r"C:\Users\13713\个人信息\毕业设计\simcse-demo\system\data\lccc_train.csv"
-CACHE_DIR = r"C:\Users\13713\个人信息\毕业设计\simcse-demo\system\data"
-IDENTITY_QUERY_KEYWORDS = ("你是什么", "你是谁")
-GREETING_KEYWORDS = ("你好", "您好", "嗨", "hello", "hi")
+from system.model_engine import SimCSEModelEngine
+from system.comparator import DialogComparator
+from system.config import (
+    DB_DATA_DIR,
+    DB_CSV_PATH,
+    DB_QUERY_INDEX_FILE,
+    DB_RESPONSE_INDEX_FILE,
+    DB_PREFIX,
+    SIMILARITY_THRESHOLD,
+    RERANK_WEIGHTS,
+)
+
+def check_kb_exists():
+    """
+    检查数据库文件是否存在。
+    """
+    required_files = [
+        DB_QUERY_INDEX_FILE,
+        DB_RESPONSE_INDEX_FILE,
+        DB_CSV_PATH,
+    ]
+    return all(os.path.exists(f) for f in required_files)
+
+
+def validate_database():
+    """
+    校验数据库文件可打开，不读取实际数据内容。
+    """
+    try:
+        with open(DB_CSV_PATH, "r", encoding="utf-8"):
+            pass
+        faiss.read_index(DB_QUERY_INDEX_FILE)
+        faiss.read_index(DB_RESPONSE_INDEX_FILE)
+    except Exception as e:
+        return False
+    return True
+
+
+def load_database_assets(prefix: str):
+    """
+    在主流程中加载数据库索引与文本映射。
+    """
+    db_base_path = os.path.join(DB_DATA_DIR, f"{prefix}_faiss_db")
+    query_index_path = db_base_path + "_query.index"
+    response_index_path = db_base_path + "_response.index"
+
+    query_index = faiss.read_index(query_index_path)
+    response_index = faiss.read_index(response_index_path)
+
+    required_rows = min(int(query_index.ntotal), int(response_index.ntotal))
+    pair_df = pd.read_csv(DB_CSV_PATH, usecols=["query", "response"], nrows=required_rows)
+
+    csv_queries = pair_df["query"].astype(str).tolist()
+    csv_replies = pair_df["response"].astype(str).tolist()
+    pair_count = min(len(csv_queries), len(csv_replies))
+    doc_texts = []
+    for idx in range(pair_count):
+        doc_texts.append(
+            {
+                "query": csv_queries[idx],
+                "reply": csv_replies[idx],
+                "query_idx": idx,
+                "reply_idx": idx,
+                "csv_idx": idx,
+            }
+        )
+    return query_index, response_index, doc_texts
+
 
 def initialize_system():
     """
-    初始化并返回用于检索回复的匹配组件实例。
-
-    说明：
-    1. 加载语义编码器；
-    2. 检查并尝试加载本地缓存；若无缓存则从语料生成并保存；
-    3. 用编码器与语料初始化匹配组件并返回。
-    返回值：匹配组件实例（可用于在线查询）。
+    执行系统初始化核心流程。
+    
+    1. 验证本地数据索引是否准备就绪。
+    2. 加载预训练的语义提取模型（模型引擎）。
+    3. 初始化对话匹配模块并从缓存中载入大规模向量数据。
+    
+    返回:
+        已准备就绪的对话匹配器实例。
     """
     print("==========================================================")
     print("                  检索式中文对话系统 启动中               ")
     print("==========================================================\n")
 
-    # 1. 初始化编码器模型
-    print("[1/4] 加载语义编码器...")
-    encoder = SimCSEEncoder()
+    # 第一步：初始化数据库加载器并校验数据库完整性
+    print("[1/4] 正在检查知识库数据索引...")
+    if not check_kb_exists():
+        msg = (
+            f"未能找到数据库文件。\n"
+        )
+        raise FileNotFoundError(msg)
 
-    # 2. 检查本地缓存：若同时存在向量与文本映射则使用缓存
-    print("[2/4] 检查本地缓存...")
-    query = None
-    response = None
-    query_vec = os.path.join(CACHE_DIR, 'train_query_embeddings.pt')
-    reply_vec = os.path.join(CACHE_DIR, 'train_reply_embeddings.pt')
-    queries_pkl = os.path.join(CACHE_DIR, 'train_queries.pt')
-    replies_pkl = os.path.join(CACHE_DIR, 'train_replies.pt')
+    if not validate_database():
+        raise RuntimeError("数据库异常")
 
-    use_cache = os.path.exists(query_vec) and os.path.exists(reply_vec) and os.path.exists(queries_pkl) and os.path.exists(replies_pkl)
+    # 第二步：加载负责将文本转化为语义向量的模型引擎
+    print("[2/4] 正在加载语义模型引擎...")
+    engine = SimCSEModelEngine()
 
-    if use_cache:
-        print("检测到有效缓存")
-    else:
-        print("未检测到有效缓存，正在从语料文件加载并生成缓存")
-        query, response = DataLoader.load_corpus(TRAIN_CSV_PATH, n_samples=100000)
+    # 第三步：在主流程加载数据库索引与文本映射
+    print("[3/4] 正在主流程加载数据库...")
+    query_index, response_index, doc_texts = load_database_assets(prefix=DB_PREFIX)
 
-    # 3. 初始化匹配器：匹配器内部会决定是否从缓存加载或重新生成缓存
-    print("[3/4] 初始化匹配组件并加载/生成缓存...")
-    matcher = DialogMatcher(
-        encoder=encoder,
-        queries=query,
-        replies=response,
-        cache_dir=CACHE_DIR,
+    # 第四步：创建匹配器实例（仅负责输入处理、检索与决策）
+    print("[4/4] 正在初始化匹配模块...")
+    comparator = DialogComparator(
+        model_engine=engine,
+        query_index=query_index,
+        response_index=response_index,
+        doc_texts=doc_texts,
         similarity_threshold=SIMILARITY_THRESHOLD,
-        enable_fallback=ENABLE_FALLBACK_REPLY,
-        fallback_top_k=FALLBACK_TOP_K
+        rerank_weights=RERANK_WEIGHTS,
     )
 
-    # 4. 完成信息
-    total_pairs = len(matcher.queries) if matcher and matcher.queries is not None else 0
-    print(f"[4/4] 语料处理完成，共 {total_pairs} 条问答对。")
-    print("系统核心模块加载完成，准备启动界面...\n")
+    # 输出加载总结信息
+    total_pairs = len(comparator.queries) if comparator.queries else 0
+    print(f"启动成功，当前知识库规模：{total_pairs} 条。")
+    print("系统已就绪，正在准备交互界面...\n")
 
-    # 返回匹配器实例以供后续调用
-    return matcher
+    return comparator
 
-# 延迟初始化，避免导入模块时触发完整启动流程
-dialog_matcher_instance = None
+# 全局单例对象，用于在多个请求间复用同一个匹配器
+dialog_comparator_instance = None
 
 def get_dialog_matcher():
-    """按需初始化并复用对话匹配器实例。"""
-    global dialog_matcher_instance
-    if dialog_matcher_instance is None:
-        dialog_matcher_instance = initialize_system()
-    return dialog_matcher_instance
+    """
+    获取全局唯一的对话匹配器。
+    如果尚未初始化，则执行完整初始化流程；如果已存在，则直接返回，避免重复加载。
+    """
+    global dialog_comparator_instance
+    if dialog_comparator_instance is None:
+        dialog_comparator_instance = initialize_system()
+    return dialog_comparator_instance
 
 def predict(user_input: str, history: list) -> str:
-    """处理一次用户输入并返回回复。
+    """
+    根据用户输入在知识库中检索并返回最合适的回答。
 
     参数：
-    - user_input: 用户输入的文本；
-    - history: 对话历史（当前未使用，仅保留接口一致性）。
+        user_input: 用户的原始提问文本。
+        history: 对话历史列表。
 
     返回：
-    - 字符串形式的回复；若未找到可信答案，会返回提示并附带简短诊断信息。
+        检索到的最佳回答文本。如果相似度过低，则返回系统预设的提示信息。
     """
     _ = history
 
-    normalized_input = (user_input or "").strip()
-    if not normalized_input:
-        return "请输入有效的内容"
+    # 调用核心匹配逻辑进行检索
+    comparator = get_dialog_matcher()
+    t0 = time.perf_counter()
 
-    lowered_input = normalized_input.lower()
-    if any(keyword in lowered_input for keyword in IDENTITY_QUERY_KEYWORDS):
-        if any(greeting in lowered_input for greeting in GREETING_KEYWORDS):
-            return "你好！我是一个基于 SimCSE 的中文检索式对话系统，可以根据语义相似度为你检索参考回答。"
-        return "我是一个基于 SimCSE 的中文检索式对话系统，可以根据语义相似度为你检索参考回答。"
-
-    # 在此处按需初始化匹配器并进行检索
-    matcher = get_dialog_matcher()
-
-    reply, score, matched_q = matcher.match(user_input, top_k_for_rerank=5)
+    reply, score, matched_q = comparator.compare(user_input)
+    elapsed_ms = (time.perf_counter() - t0) * 1000.0
 
     if matched_q:
-        diagnostic_log = f"\n\n> 匹配问题:「{matched_q}」 ｜ 相似度: {score:.4f}"
+        diagnostic_log = f"\n\n> 匹配问题:「{matched_q}」 ｜ 相似度: {score:.4f} ｜ 耗时: {elapsed_ms:.2f} ms"
     else:
-        diagnostic_log = f"\n\n> 未匹配到高置信度答案，最高相似度: {score:.4f}"
+        diagnostic_log = f"\n\n> 未匹配到高置信度答案，最高相似度: {score:.4f} ｜ 耗时: {elapsed_ms:.2f} ms"
 
     return reply + diagnostic_log
 
