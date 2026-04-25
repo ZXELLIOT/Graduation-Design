@@ -49,7 +49,7 @@ CONTEXT_SEMANTIC_THRESHOLD = 0.58
 # AI 增强配置（默认关闭）
 AI_ENHANCED_DEFAULT = os.getenv("AI_ENHANCED_DEFAULT", "0") == "1"
 AI_ENHANCE_TOPK = int(os.getenv("AI_ENHANCE_TOPK", "5"))
-AI_ENHANCE_MODEL_NAME = os.getenv("ARK_MODEL_NAME", "doubao-seed-2-0-mini-260215")
+AI_ENHANCE_MODEL_NAME = os.getenv("ARK_MODEL_NAME", "Doubao1.5-vision-pro")
 AI_ENHANCE_RESPONSES_URL = os.getenv("ARK_RESPONSES_URL", "https://ark.cn-beijing.volces.com/api/v3/responses")
 AI_ENHANCE_API_KEY = os.getenv("ARK_API_KEY", "ark-8580122c-c8a0-4863-bf54-2cf9dfbb4fd5-ccb90")
 AI_ENHANCE_TIMEOUT_SEC = float(os.getenv("ARK_TIMEOUT_SEC", "20"))

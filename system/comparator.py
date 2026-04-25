@@ -246,21 +246,19 @@ class DialogComparator:
         return text[: self.max_text_len]
 
     def _extract_recent_context(self, history: Optional[List[Any]]) -> List[str]:
-        """缓存并提取最近 2 轮上下文（用户+系统）。"""
+        """缓存并提取最近 2 轮用户输入上下文。"""
         if not history:
             self._recent_dialog_cache = []
             return []
 
-        rounds: List[Tuple[str, str]] = []
+        rounds: List[str] = []
         for turn in history:
             if isinstance(turn, (list, tuple)) and len(turn) >= 2:
                 user_part = turn[0]
-                bot_part = turn[1]
-                if isinstance(user_part, str) and isinstance(bot_part, str):
+                if isinstance(user_part, str):
                     user_clean = self._normalize_input(user_part)
-                    bot_clean = self._normalize_input(bot_part)
-                    if user_clean and bot_clean and not self._is_invalid_after_clean(user_clean):
-                        rounds.append((self._truncate_text(user_clean), self._truncate_text(bot_clean)))
+                    if user_clean and not self._is_invalid_after_clean(user_clean):
+                        rounds.append(self._truncate_text(user_clean))
             elif isinstance(turn, dict):
                 # 若是 message 列表格式(dict)，该函数不做复杂配对，避免引入歧义。
                 continue
@@ -269,12 +267,8 @@ class DialogComparator:
             self._recent_dialog_cache = []
             return []
 
-        self._recent_dialog_cache: List[Tuple[str, str]] = rounds[-self.context_cache_turns :]
-        context_lines: List[str] = []
-        for user_text, bot_text in self._recent_dialog_cache:
-            context_lines.append(f"用户:{user_text} 系统:{bot_text}")
-
-        return context_lines
+        self._recent_dialog_cache: List[str] = rounds[-self.context_cache_turns :]
+        return list(self._recent_dialog_cache)
 
     def _merge_context_with_budget(self, current: str, recent_contexts: List[str]) -> str:
         """在长度预算内拼接上下文，并保证当前问题完整保留。"""
@@ -299,7 +293,7 @@ class DialogComparator:
             if not t:
                 continue
 
-            needed = len(t) + 1  # 包含分隔空格
+            needed = len(t)
             if used + needed > budget_left:
                 continue
 
@@ -310,7 +304,7 @@ class DialogComparator:
             return current_text
 
         selected.reverse()
-        return " ".join(selected + [current_text]).strip()
+        return "".join(selected + [current_text]).strip()
 
     def _evaluate_context_need(self, current_text: str, recent_contexts: Optional[List[str]] = None) -> TraceMeta:
         """按规则判断是否需要上下文：短文本或命中关键词才启用。"""
@@ -322,10 +316,6 @@ class DialogComparator:
             "reason": "empty_input",
             "has_trigger": False,
             "is_short_query": False,
-            "overlap_ratio": 0.0,
-            "semantic_ratio": 0.0,
-            "semantic_checked": False,
-            "context_score": 0.0,
             "negative_hit": False,
             "history_count": int(len(contexts)),
             "current_text_len": int(len(current)),
@@ -343,7 +333,6 @@ class DialogComparator:
             {
                 "has_trigger": bool(has_trigger),
                 "is_short_query": bool(is_short_query),
-                "overlap_ratio": 0.0,
                 "negative_hit": bool(negative_hit),
             }
         )
@@ -355,14 +344,12 @@ class DialogComparator:
         if is_short_query:
             meta["enabled"] = True
             meta["reason"] = "short_query"
-            meta["context_score"] = 1.0
             return meta
 
         # 关键词即触发：只要命中“指向上文”关键词并且存在历史，直接启用上下文。
         if has_trigger:
             meta["enabled"] = True
             meta["reason"] = "trigger_keyword"
-            meta["context_score"] = 1.0
             return meta
 
         meta["reason"] = "no_context_needed"
@@ -377,10 +364,6 @@ class DialogComparator:
                 "reason": "disabled_by_config",
                 "has_trigger": False,
                 "is_short_query": False,
-                "overlap_ratio": 0.0,
-                "semantic_ratio": 0.0,
-                "semantic_checked": False,
-                "context_score": 0.0,
                 "negative_hit": False,
                 "history_count": 0,
                 "current_text_len": int(len(current)),
@@ -424,10 +407,6 @@ class DialogComparator:
                 "reason": "invalid_input",
                 "has_trigger": False,
                 "is_short_query": False,
-                "overlap_ratio": 0.0,
-                "semantic_ratio": 0.0,
-                "semantic_checked": False,
-                "context_score": 0.0,
                 "negative_hit": False,
                 "history_count": 0,
                 "current_text_len": 0,
@@ -581,8 +560,6 @@ class DialogComparator:
                     "reason": "invalid_input",
                     "has_trigger": False,
                     "is_short_query": False,
-                    "overlap_ratio": 0.0,
-                    "semantic_ratio": 0.0,
                     "negative_hit": False,
                     "history_count": 0,
                     "current_text_len": 0,

@@ -11,6 +11,14 @@ from typing import Any, Dict, List, Tuple
 import requests
 
 
+def _trim_text(text: str, max_len: int) -> str:
+    """截断文本以降低 token 消耗并保持请求稳定。"""
+    val = str(text or "").strip()
+    if len(val) <= max_len:
+        return val
+    return val[:max_len]
+
+
 def _extract_ai_output_text(resp_json: Dict[str, Any]) -> str:
     """从 responses 接口返回中提取文本。"""
     output_text = resp_json.get("output_text", "")
@@ -49,21 +57,22 @@ def generate_ai_enhanced_reply(
     if not api_key:
         return str(candidates[0][1].get("reply", ""))
 
+    # 为加速与降 token，AI 融合阶段只保留更小候选集。
     top_k_safe = max(1, int(top_k))
+    ai_top_k = min(top_k_safe, 3)
     top_replies: List[str] = []
-    for _, item in candidates[:top_k_safe]:
-        top_replies.append(str(item.get("reply", "") or ""))
-
-    while len(top_replies) < top_k_safe:
-        top_replies.append("")
+    for _, item in candidates[:ai_top_k]:
+        top_replies.append(_trim_text(str(item.get("reply", "") or ""), max_len=72))
 
     top_reply_lines = [f"{idx}. {reply}" for idx, reply in enumerate(top_replies, start=1)]
 
+    compact_query = _trim_text(str(contextual_user_input), max_len=48)
     prompt = (
-        f"你是一个中文闲聊助手，请根据 topk={top_k_safe} 条候选答句生成一个最自然、最准确的回复。"
-        "\n要求: 仅输出最终答复内容，不要解释。"
-        f"\n\n用户输入（上下文判断后）:\n{str(contextual_user_input)}"
-        f"\n\ntopk={top_k_safe}条答句:\n" + "\n".join(top_reply_lines)
+        "你是中文助手。请在候选中选最合适答复并润色成一句自然中文。"
+        "\n如果你觉得这些候选回答都不好，请按你的想法直接生成更好的回答。"
+        "\n只输出最终答复，不要解释。"
+        f"\n用户输入:{compact_query}"
+        f"\n候选:\n" + "\n".join(top_reply_lines)
     )
 
     payload = {

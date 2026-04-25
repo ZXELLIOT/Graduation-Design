@@ -70,18 +70,8 @@ function formatContextReason(reason) {
   const key = String(reason || "unknown");
   const map = {
     short_query: "短文本(<=4字)，拼接上下文",
-    trigger_supported: "触发词+相似信号",
     trigger_keyword: "命中关键词，直接拼接",
     no_context_needed: "无需上下文，直接检索原问题",
-    trigger_overlap_fast: "触发词+词面重叠(快速命中)",
-    trigger_semantic_supported: "触发词+相似信号",
-    fused_score_supported: "融合评分达标",
-    overlap_semantic_supported: "词面+语义双信号",
-    semantic_supported: "语义强相关",
-    no_trigger_keyword: "未命中关键词，不拼接",
-    low_overlap_no_trigger: "无触发词且词面重叠低，不拼接",
-    insufficient_signals: "信号不足，不拼接",
-    negative_signal: "检测到切题词，不拼接",
     no_history: "无历史，不拼接",
     invalid_input: "输入无效",
     empty_input: "空输入",
@@ -126,11 +116,6 @@ function renderLogItem(item) {
   const topKReq = Number.isFinite(Number(item.top_k_requested)) ? Math.round(Number(item.top_k_requested)) : 0;
 
   const contextTrace = typeof item.context_trace === "object" && item.context_trace !== null ? item.context_trace : {};
-  const overlap = Number.isFinite(Number(contextTrace.overlap_ratio)) ? Number(contextTrace.overlap_ratio).toFixed(3) : "0.000";
-  const semantic = Number.isFinite(Number(contextTrace.semantic_ratio)) ? Number(contextTrace.semantic_ratio).toFixed(3) : "0.000";
-  const semanticChecked = Boolean(contextTrace.semantic_checked);
-  const semanticLabel = semanticChecked ? semantic : "跳过";
-  const contextScore = Number.isFinite(Number(contextTrace.context_score)) ? Number(contextTrace.context_score).toFixed(3) : "0.000";
   const hasTrigger = Boolean(contextTrace.has_trigger);
   const historyCount = Number.isFinite(Number(contextTrace.history_count)) ? Math.round(Number(contextTrace.history_count)) : 0;
   const contextJoinText = contextEnabled ? `${userUsed || "-"} / ${userRaw || "-"}` : `${userRaw || "-"}`;
@@ -186,9 +171,6 @@ function renderLogItem(item) {
       <div class="log-context">
         <strong>上下文判定:</strong> ${escapeHtml(contextReason)}
         <span>触发词:${hasTrigger ? "是" : "否"}</span>
-        <span>词面:${overlap}</span>
-        <span>语义:${semanticLabel}</span>
-        <span>融合分:${contextScore}</span>
         <span>历史轮数:${historyCount}(用于判定)</span>
       </div>
     </div>
