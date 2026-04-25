@@ -1,21 +1,22 @@
+"""
+system/model_engine.py
+
+文件作用:
+    SimCSE 双塔编码引擎。
+    负责文本分词、前向推理、池化与向量归一化。
+"""
+
 import os
-import sys
+import math
 import numpy as np
 import torch
 from transformers import AutoModel, AutoTokenizer
 from tqdm.auto import tqdm
 from contextlib import nullcontext
-
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, PROJECT_ROOT)
-
 from system.config import SIMCSE_MODEL_DIR
-
 
 MAX_LENGTH = 128
 SENTENCE_POOLING = "cls"
-
 
 class SimCSEModelEngine:
     """
@@ -61,7 +62,8 @@ class SimCSEModelEngine:
 
         # 说明：
         # 1. 本引擎仅负责“文本 -> 向量”，不负责检索与重排。
-        # 2. encode / encode_one 默认输出已做 L2 归一化向量，
+        # 2. encode / encode_one 默认输出已做 L2 归一化向量。
+        self.hidden_size = int(self.query_encoder.config.hidden_size)
 
     def _l2_normalize(self, embeddings, eps=1e-8):
         """
@@ -177,7 +179,15 @@ class SimCSEModelEngine:
         )
         return {k: v.to(self.device, non_blocking=True) for k, v in inputs.items()}
 
-    def encode(self, texts, batch_size=32, encoder: str = "query", return_numpy: bool = False, show_progress: bool = True):
+    def encode(
+        self,
+        texts,
+        batch_size=32,
+        encoder: str = "query",
+        return_numpy: bool = False,
+        show_progress: bool = True,
+        normalize: bool = True,
+    ):
         """
         批量将文本转换为语义向量。
         
@@ -187,6 +197,7 @@ class SimCSEModelEngine:
             encoder: 指定使用的模型类型，可选 'query' (问句) 或 'response' (答句)。
             return_numpy: 是否将结果转换为通用的数值数组返回。
             show_progress: 是否显示进度条。
+            normalize: 是否进行 L2 归一化，默认 True。
 
         返回:
             - return_numpy=False: torch.Tensor，形状约为 [N, hidden_size]
@@ -197,7 +208,7 @@ class SimCSEModelEngine:
             2. 按 batch 切片
             3. tokenizer 构造输入并迁移设备
             4. 前向推理并池化
-            5. 做 L2 归一化
+            5. 可选 L2 归一化
             6. 汇总后按 return_numpy 决定返回格式
         """
         if isinstance(texts, str):
@@ -210,9 +221,9 @@ class SimCSEModelEngine:
         model = self.query_encoder if encoder == "query" else self.response_encoder
         all_embeddings = []
 
-        batch_ranges = list(self._batch_slices(len(texts), batch_size))
+        total_batches = math.ceil(len(texts) / batch_size) if len(texts) > 0 else 0
         progress_bar = tqdm(
-            total=len(batch_ranges),
+            total=total_batches,
             desc=f"语义提取中({encoder})",
             unit="批次",
             dynamic_ncols=True,
@@ -225,7 +236,7 @@ class SimCSEModelEngine:
             amp_ctx = torch.autocast(device_type="cuda", dtype=torch.float16) if self.use_amp else nullcontext()
             with amp_ctx:
                 try:
-                    for start, end in batch_ranges:
+                    for start, end in self._batch_slices(len(texts), batch_size):
                         batch_texts = texts[start:end]
                         # 将文本切分为模型可理解的数字序列，并迁移到目标设备
                         inputs = self._prepare_inputs(batch_texts)
@@ -233,22 +244,40 @@ class SimCSEModelEngine:
                         need_hidden_states = self.pooling == "first_last_avg"
                         outputs = model(**inputs, output_hidden_states=need_hidden_states)
                         embeddings = self._sentence_pooling(outputs, inputs["attention_mask"])
-                        embeddings = self._l2_normalize(embeddings)
+                        if normalize:
+                            embeddings = self._l2_normalize(embeddings)
                         all_embeddings.append(embeddings.cpu())
                         progress_bar.update(1)
                 finally:
                     progress_bar.close()
-        # 空输入时返回空张量
-        merged = torch.cat(all_embeddings, dim=0) if all_embeddings else torch.empty((0, 0))
+        # 空输入时返回 [0, hidden_size]，避免下游维度推断出错。
+        merged = torch.cat(all_embeddings, dim=0) if all_embeddings else torch.empty((0, self.hidden_size), dtype=torch.float32)
         return merged.numpy() if return_numpy else merged
 
-    def encode_one(self, text, encoder: str = "query", return_numpy: bool = False):
-        """单条文本编码便捷入口。
+    def encode_one(self, text, encoder: str = "query", return_numpy: bool = False, normalize: bool = True):
+        """单条文本编码入口。
 
         说明：
-            复用 encode 的完整流程，保证单条与批量编码逻辑一致。
+            在线检索场景频繁调用本方法，这里走单条快速路径，
+            避免 encode([text]) 的额外列表拼接与合并开销。
         """
-        emb = self.encode([text], batch_size=1, encoder=encoder, return_numpy=return_numpy, show_progress=False)
+        if encoder not in ("query", "response"):
+            raise ValueError("编码器参数只能是 'query' 或 'response'")
+
+        model = self.query_encoder if encoder == "query" else self.response_encoder
+        safe_text = "" if text is None else str(text)
+
+        with torch.inference_mode():
+            amp_ctx = torch.autocast(device_type="cuda", dtype=torch.float16) if self.use_amp else nullcontext()
+            with amp_ctx:
+                inputs = self._prepare_inputs([safe_text])
+                need_hidden_states = self.pooling == "first_last_avg"
+                outputs = model(**inputs, output_hidden_states=need_hidden_states)
+                emb = self._sentence_pooling(outputs, inputs["attention_mask"])
+                if normalize:
+                    emb = self._l2_normalize(emb)
+
+        emb_1d = emb[0].detach().cpu().float()
         if return_numpy:
-            return emb.reshape(-1)
-        return emb.reshape(-1)
+            return emb_1d.numpy().reshape(-1)
+        return emb_1d.reshape(-1)

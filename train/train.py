@@ -1,3 +1,11 @@
+"""
+train/train.py
+
+文件作用:
+    双塔检索模型训练主脚本。
+    包含数据加载、阶段训练、自动降批重试、验证评估与模型导出。
+"""
+
 import os
 import argparse
 import logging
@@ -27,7 +35,7 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from config_server import (
+from train.config import (
     TRAIN_NEG_CSV_PATH,
     VALID_NEG_CSV_PATH,
     TEST_NEG_CSV_PATH,
@@ -127,11 +135,28 @@ def _tokenize_to_device(tokenizer, texts, max_length):
 
 
 def _require_file_exists(path, label):
+    """检查文件是否存在。
+
+    参数:
+        path: 文件路径。
+        label: 文件标签，用于报错提示。
+    返回:
+        无返回值。
+    """
     if not os.path.exists(path):
         raise FileNotFoundError(f'{label}文件缺失: {path}')
 
 
 def _require_min_size(actual_size, expected_size, label):
+    """检查样本数量是否达到最小要求。
+
+    参数:
+        actual_size: 实际样本数量。
+        expected_size: 期望样本数量。
+        label: 数据集标签。
+    返回:
+        无返回值。
+    """
     if actual_size < expected_size:
         raise ValueError(f'{label}样本不足，期望至少 {expected_size}，实际 {actual_size}')
 
@@ -154,15 +179,31 @@ class PositivePairDataset(Dataset):
     """正样本对数据集：query, response。"""
 
     def __init__(self, queries, responses):
+        """初始化正样本对数据集。
+
+        参数:
+            queries: 问句列表。
+            responses: 回复列表。
+        返回:
+            无返回值。
+        """
         if len(queries) != len(responses):
             raise ValueError('正样本问答数量不一致。')
         self.queries = queries
         self.responses = responses
 
     def __len__(self):
+        """返回数据集大小。"""
         return len(self.queries)
 
     def __getitem__(self, idx):
+        """按索引获取单条样本。
+
+        参数:
+            idx: 样本索引。
+        返回:
+            (query, response) 元组。
+        """
         return self.queries[idx], self.responses[idx]
 
 
@@ -170,12 +211,27 @@ class QueryOnlyDataset(Dataset):
     """仅问句数据集：query。"""
 
     def __init__(self, queries):
+        """初始化问句数据集。
+
+        参数:
+            queries: 问句列表。
+        返回:
+            无返回值。
+        """
         self.queries = queries
 
     def __len__(self):
+        """返回数据集大小。"""
         return len(self.queries)
 
     def __getitem__(self, idx):
+        """按索引获取单条问句。
+
+        参数:
+            idx: 样本索引。
+        返回:
+            单条问句字符串。
+        """
         return self.queries[idx]
 
 
@@ -183,6 +239,15 @@ class PositiveNegativeDataset(Dataset):
     """正负样本数据集：query, response, negative_response。"""
 
     def __init__(self, queries, responses, negative_responses):
+        """初始化正负样本数据集。
+
+        参数:
+            queries: 问句列表。
+            responses: 正样本回复列表。
+            negative_responses: 负样本回复列表。
+        返回:
+            无返回值。
+        """
         if len(queries) != len(responses) or len(queries) != len(negative_responses):
             raise ValueError('问句、正样本、负样本数量不一致。')
         self.queries = queries
@@ -190,9 +255,17 @@ class PositiveNegativeDataset(Dataset):
         self.negative_responses = negative_responses
 
     def __len__(self):
+        """返回数据集大小。"""
         return len(self.queries)
 
     def __getitem__(self, idx):
+        """按索引获取单条三元组样本。
+
+        参数:
+            idx: 样本索引。
+        返回:
+            (query, positive, negative) 元组。
+        """
         return self.queries[idx], self.responses[idx], self.negative_responses[idx]
 
 
@@ -259,6 +332,16 @@ class DualEncoderModel(nn.Module):
     """双编码器模型，分别处理问句和回复，实现向量匹配。"""
 
     def __init__(self, model_name_or_path, pooling_strategy='cls', temperature=0.05, local_files_only=False):
+        """初始化双塔模型。
+
+        参数:
+            model_name_or_path: 模型目录或模型名称。
+            pooling_strategy: 池化策略，支持 cls/mean。
+            temperature: 对比学习温度参数。
+            local_files_only: 是否仅从本地加载模型。
+        返回:
+            无返回值。
+        """
         super().__init__()
         # 加载两个独立的编码器分支：问句编码器和回复编码器
         q_dir = os.path.join(model_name_or_path, 'query_encoder')
@@ -311,6 +394,17 @@ class DualEncoderModel(nn.Module):
 
 
 def _build_dataloader(dataset, batch_size, shuffle, num_workers=-1, prefetch_factor=4):
+    """构建 DataLoader。
+
+    参数:
+        dataset: 数据集对象。
+        batch_size: 批大小。
+        shuffle: 是否打乱。
+        num_workers: 工作进程数，<0 表示自动推断。
+        prefetch_factor: 预取因子。
+    返回:
+        配置完成的 DataLoader。
+    """
     pin_memory = DEVICE.type == 'cuda'
     # 自动获取最优线程数以拉满 CPU 效率
     if num_workers is None or num_workers < 0:
@@ -639,6 +733,22 @@ def _run_stage(
     scaler,
     train_eval_fn,
 ):
+    """执行单个训练阶段（含训练和验证）。
+
+    参数:
+        stage_name: 阶段名称。
+        model: 训练模型。
+        tokenizer: 分词器。
+        train_dataloader: 训练集加载器。
+        valid_dataloader: 验证集加载器。
+        epochs: 训练轮数。
+        learning_rate: 学习率。
+        max_length: 文本最大长度。
+        scaler: 混合精度梯度缩放器。
+        train_eval_fn: 具体阶段训练函数。
+    返回:
+        无返回值。
+    """
     optimizer = AdamW(model.parameters(), lr=learning_rate, weight_decay=0.01)
     total_steps = len(train_dataloader) * epochs
     warmup_steps = int(total_steps * 0.05)

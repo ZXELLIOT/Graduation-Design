@@ -1,8 +1,17 @@
 # Python cache and compiled files
 __pycache__/
+*.py[cod]
+*$py.class
+
+# Python test/cache tooling
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
 
 # Virtual environments
 .env
+.env.*
 .venv
 venv/
 ENV/
@@ -12,6 +21,7 @@ env/
 build/
 dist/
 *.egg-info/
+pip-wheel-metadata/
 
 # Model and data files
 *.pt
@@ -20,9 +30,20 @@ dist/
 model/
 models/
 data/
+db/data/*.index
+db/data/*.csv
+
+# Runtime artifacts
+runtime/chat_logs/
+*.log
+
+# Tunnel / local dev tools
+.cloudflared/
+cloudflared.log
 
 # IDE
 .vscode/
+.idea/
 
 # OS
 .DS_Store

@@ -1,192 +1,292 @@
+"""
+system/app.py
+
+文件作用:
+    Web 主入口。
+    负责接口路由与模块调用。
+"""
+
 import os
 import sys
 import time
-import gradio as gr
-import faiss
-import pandas as pd
+import re
+import atexit
+import threading
+import subprocess
+import uvicorn
+import psutil
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+from uuid import uuid4
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(CURRENT_DIR)
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from system.model_engine import SimCSEModelEngine
-from system.comparator import DialogComparator
-from system.config import (
-    DB_DATA_DIR,
-    DB_CSV_PATH,
-    DB_QUERY_INDEX_FILE,
-    DB_RESPONSE_INDEX_FILE,
-    DB_PREFIX,
-    SIMILARITY_THRESHOLD,
-    RERANK_WEIGHTS,
-)
+from system.bootstrap import get_dialog_comparator
+from system.chat_logger import LOG_FILE, append_chat_log, clear_logs, latest_logs
+from system.chat_service import infer
+from system.comparator_settings import apply_comparator_settings, comparator_settings_payload
 
-def check_kb_exists():
-    """
-    检查数据库文件是否存在。
-    """
-    required_files = [
-        DB_QUERY_INDEX_FILE,
-        DB_RESPONSE_INDEX_FILE,
-        DB_CSV_PATH,
-    ]
-    return all(os.path.exists(f) for f in required_files)
+WEB_DIR = Path(CURRENT_DIR) / "web"
+SERVICE_START_TS = time.time()
+PROCESS = psutil.Process(os.getpid())
+AUTO_TUNNEL_ENABLED = os.getenv("AUTO_TUNNEL_ENABLED", "1") == "1"
+TUNNEL_LOCAL_URL = os.getenv("TUNNEL_LOCAL_URL", "http://127.0.0.1:7860")
+_tunnel_process: Optional[subprocess.Popen[str]] = None
+_tunnel_url: str = ""
+
+# 预热一次，避免首次读取出现全 0。
+psutil.cpu_percent(interval=None)
+PROCESS.cpu_percent(interval=None)
 
 
-def validate_database():
-    """
-    校验数据库文件可打开，不读取实际数据内容。
-    """
+def _read_tunnel_output(proc: subprocess.Popen[str]) -> None:
+    """异步读取 cloudflared 输出并提取 trycloudflare 访问地址。"""
+    global _tunnel_url
+    if proc.stdout is None:
+        return
+
+    for raw in proc.stdout:
+        line = str(raw).strip()
+        if line:
+            print(f"[tunnel] {line}")
+        if not _tunnel_url:
+            match = re.search(r"https://[a-zA-Z0-9.-]+\.trycloudflare\.com", line)
+            if match:
+                _tunnel_url = match.group(0)
+                print(f"[tunnel] 公网访问地址: {_tunnel_url}")
+
+
+def start_quick_tunnel() -> None:
+    """启动 cloudflared quick tunnel（若可用）。"""
+    global _tunnel_process
+
+    if not AUTO_TUNNEL_ENABLED:
+        print("[tunnel] AUTO_TUNNEL_ENABLED=0，已跳过自动内网穿透。")
+        return
+
+    if _tunnel_process is not None and _tunnel_process.poll() is None:
+        return
+
+    cmd = ["cloudflared", "tunnel", "--url", TUNNEL_LOCAL_URL]
     try:
-        with open(DB_CSV_PATH, "r", encoding="utf-8"):
-            pass
-        faiss.read_index(DB_QUERY_INDEX_FILE)
-        faiss.read_index(DB_RESPONSE_INDEX_FILE)
+        _tunnel_process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+        threading.Thread(target=_read_tunnel_output, args=(_tunnel_process,), daemon=True).start()
+        print("[tunnel] 已启动 cloudflared quick tunnel，正在生成公网地址...")
+    except FileNotFoundError:
+        print("[tunnel] 未找到 cloudflared，跳过自动内网穿透。")
     except Exception as e:
-        return False
-    return True
+        print(f"[tunnel] 启动失败: {e}")
 
 
-def load_database_assets(prefix: str):
-    """
-    在主流程中加载数据库索引与文本映射。
-    """
-    db_base_path = os.path.join(DB_DATA_DIR, f"{prefix}_faiss_db")
-    query_index_path = db_base_path + "_query.index"
-    response_index_path = db_base_path + "_response.index"
-
-    query_index = faiss.read_index(query_index_path)
-    response_index = faiss.read_index(response_index_path)
-
-    required_rows = min(int(query_index.ntotal), int(response_index.ntotal))
-    pair_df = pd.read_csv(DB_CSV_PATH, usecols=["query", "response"], nrows=required_rows)
-
-    csv_queries = pair_df["query"].astype(str).tolist()
-    csv_replies = pair_df["response"].astype(str).tolist()
-    pair_count = min(len(csv_queries), len(csv_replies))
-    doc_texts = []
-    for idx in range(pair_count):
-        doc_texts.append(
-            {
-                "query": csv_queries[idx],
-                "reply": csv_replies[idx],
-                "query_idx": idx,
-                "reply_idx": idx,
-                "csv_idx": idx,
-            }
-        )
-    return query_index, response_index, doc_texts
+def stop_quick_tunnel() -> None:
+    """停止 cloudflared tunnel 进程。"""
+    global _tunnel_process
+    if _tunnel_process is None:
+        return
+    try:
+        if _tunnel_process.poll() is None:
+            _tunnel_process.terminate()
+    except Exception:
+        pass
+    finally:
+        _tunnel_process = None
 
 
-def initialize_system():
-    """
-    执行系统初始化核心流程。
-    
-    1. 验证本地数据索引是否准备就绪。
-    2. 加载预训练的语义提取模型（模型引擎）。
-    3. 初始化对话匹配模块并从缓存中载入大规模向量数据。
-    
-    返回:
-        已准备就绪的对话匹配器实例。
-    """
-    print("==========================================================")
-    print("                  检索式中文对话系统 启动中               ")
-    print("==========================================================\n")
+atexit.register(stop_quick_tunnel)
 
-    # 第一步：初始化数据库加载器并校验数据库完整性
-    print("[1/4] 正在检查知识库数据索引...")
-    if not check_kb_exists():
-        msg = (
-            f"未能找到数据库文件。\n"
-        )
-        raise FileNotFoundError(msg)
 
-    if not validate_database():
-        raise RuntimeError("数据库异常")
+class ChatRequest(BaseModel):
+    """聊天请求体。"""
 
-    # 第二步：加载负责将文本转化为语义向量的模型引擎
-    print("[2/4] 正在加载语义模型引擎...")
-    engine = SimCSEModelEngine()
+    message: str
+    history: Optional[List[List[str]]] = None
+    conversation_id: Optional[str] = None
 
-    # 第三步：在主流程加载数据库索引与文本映射
-    print("[3/4] 正在主流程加载数据库...")
-    query_index, response_index, doc_texts = load_database_assets(prefix=DB_PREFIX)
 
-    # 第四步：创建匹配器实例（仅负责输入处理、检索与决策）
-    print("[4/4] 正在初始化匹配模块...")
-    comparator = DialogComparator(
-        model_engine=engine,
-        query_index=query_index,
-        response_index=response_index,
-        doc_texts=doc_texts,
-        similarity_threshold=SIMILARITY_THRESHOLD,
-        rerank_weights=RERANK_WEIGHTS,
+class ChatResponse(BaseModel):
+    """聊天响应体。"""
+
+    conversation_id: str
+    reply: str
+    score: float
+    result_type: str
+    elapsed_ms: float
+    matched_query: Optional[str] = None
+    ai_enhanced: bool = False
+
+
+class ComparatorSettingsRequest(BaseModel):
+    """比较器调参请求体。"""
+
+    similarity_threshold: Optional[float] = None
+    rerank_query_weight: Optional[float] = None
+    rerank_reply_weight: Optional[float] = None
+    context_max_turns: Optional[int] = None
+    max_text_len: Optional[int] = None
+    context_short_query_len: Optional[int] = None
+    context_matching_enabled: Optional[bool] = None
+    context_overlap_threshold: Optional[float] = None
+    context_semantic_threshold: Optional[float] = None
+    coarse_recall_count: Optional[int] = None
+    rerank_top_k: Optional[int] = None
+    ai_enhanced: Optional[bool] = None
+
+
+api_app = FastAPI(title="日常闲聊机器人本地服务", version="1.0.0")
+
+if WEB_DIR.exists():
+    api_app.mount("/static", StaticFiles(directory=str(WEB_DIR)), name="static")
+
+
+@api_app.get("/")
+def home() -> FileResponse:
+    """返回前端首页文件。"""
+    index_file = WEB_DIR / "index.html"
+    if not index_file.exists():
+        raise HTTPException(status_code=404, detail=f"前端首页不存在: {index_file}")
+    return FileResponse(str(index_file))
+
+
+@api_app.get("/api/meta")
+def meta() -> Dict[str, str]:
+    """返回服务元信息。"""
+    return {
+        "app": "日常闲聊机器人",
+        "database_source": "LCCC-large+ FAISS 索引",
+        "log_file": str(LOG_FILE),
+        "tunnel_url": _tunnel_url,
+    }
+
+
+@api_app.on_event("startup")
+def _startup_hook() -> None:
+    """服务启动后自动拉起内网穿透。"""
+    start_quick_tunnel()
+
+
+@api_app.on_event("shutdown")
+def _shutdown_hook() -> None:
+    """服务退出时关闭内网穿透进程。"""
+    stop_quick_tunnel()
+
+
+@api_app.get("/api/settings/comparator")
+def get_comparator_settings() -> Dict[str, Any]:
+    """读取当前比较器全部可调参数。"""
+    comparator = get_dialog_comparator()
+    return comparator_settings_payload(comparator)
+
+
+@api_app.post("/api/settings/comparator")
+def set_comparator_settings(req: ComparatorSettingsRequest) -> Dict[str, Any]:
+    """热更新比较器参数。"""
+    comparator = get_dialog_comparator()
+    apply_comparator_settings(comparator, req)
+    return {"ok": True, **comparator_settings_payload(comparator)}
+
+
+@api_app.post("/api/chat", response_model=ChatResponse)
+def chat(req: ChatRequest) -> ChatResponse:
+    """聊天接口。"""
+    conversation_id = req.conversation_id or str(uuid4())
+
+    # 推理主链路：输入 -> 检索/增强 -> 结构化结果。
+    result = infer(user_input=req.message, history=req.history)
+
+    # 落盘日志，便于离线分析与问题复盘。
+    append_chat_log(
+        conversation_id=conversation_id,
+        user_input=req.message,
+        result=result,
+        history=req.history,
+    )
+    return ChatResponse(
+        conversation_id=conversation_id,
+        reply=str(result["reply"]),
+        score=float(result["score"]),
+        result_type=str(result["result_type"]),
+        elapsed_ms=float(result["elapsed_ms"]),
+        matched_query=result.get("matched_q"),
+        ai_enhanced=bool(result.get("ai_enhanced", False)),
     )
 
-    # 输出加载总结信息
-    total_pairs = len(comparator.queries) if comparator.queries else 0
-    print(f"启动成功，当前知识库规模：{total_pairs} 条。")
-    print("系统已就绪，正在准备交互界面...\n")
 
-    return comparator
+@api_app.get("/api/logs/latest")
+def api_latest_logs(limit: int = 50) -> JSONResponse:
+    """读取最近日志记录。"""
+    return JSONResponse(latest_logs(limit=limit))
 
-# 全局单例对象，用于在多个请求间复用同一个匹配器
-dialog_comparator_instance = None
 
-def get_dialog_matcher():
-    """
-    获取全局唯一的对话匹配器。
-    如果尚未初始化，则执行完整初始化流程；如果已存在，则直接返回，避免重复加载。
-    """
-    global dialog_comparator_instance
-    if dialog_comparator_instance is None:
-        dialog_comparator_instance = initialize_system()
-    return dialog_comparator_instance
+@api_app.post("/api/logs/clear")
+def api_clear_logs() -> Dict[str, Any]:
+    """清空日志文件并返回统计信息。"""
+    return {"ok": True, "cleared_count": clear_logs()}
 
-def predict(user_input: str, history: list) -> str:
-    """
-    根据用户输入在知识库中检索并返回最合适的回答。
 
-    参数：
-        user_input: 用户的原始提问文本。
-        history: 对话历史列表。
+@api_app.get("/api/perf")
+def api_perf() -> Dict[str, Any]:
+    """返回实时性能指标（设备与对话系统）。"""
+    vm = psutil.virtual_memory()
+    cpu_percent = float(psutil.cpu_percent(interval=None))
+    proc_cpu_percent = float(PROCESS.cpu_percent(interval=None))
+    proc_mem_mb = float(PROCESS.memory_info().rss / (1024 * 1024))
+    uptime_sec = float(time.time() - SERVICE_START_TS)
 
-    返回：
-        检索到的最佳回答文本。如果相似度过低，则返回系统预设的提示信息。
-    """
-    _ = history
+    logs = latest_logs(limit=120)
+    elapsed_vals = [float(x.get("elapsed_ms", 0.0)) for x in logs if isinstance(x, dict)]
+    elapsed_vals = [x for x in elapsed_vals if x >= 0.0]
 
-    # 调用核心匹配逻辑进行检索
-    comparator = get_dialog_matcher()
-    t0 = time.perf_counter()
-
-    reply, score, matched_q = comparator.compare(user_input)
-    elapsed_ms = (time.perf_counter() - t0) * 1000.0
-
-    if matched_q:
-        diagnostic_log = f"\n\n> 匹配问题:「{matched_q}」 ｜ 相似度: {score:.4f} ｜ 耗时: {elapsed_ms:.2f} ms"
+    if elapsed_vals:
+        avg_elapsed = float(sum(elapsed_vals) / len(elapsed_vals))
+        p95_elapsed = float(sorted(elapsed_vals)[max(0, int(len(elapsed_vals) * 0.95) - 1)])
+        latest_elapsed = float(elapsed_vals[-1])
     else:
-        diagnostic_log = f"\n\n> 未匹配到高置信度答案，最高相似度: {score:.4f} ｜ 耗时: {elapsed_ms:.2f} ms"
+        avg_elapsed = 0.0
+        p95_elapsed = 0.0
+        latest_elapsed = 0.0
 
-    return reply + diagnostic_log
+    return {
+        "timestamp": time.strftime("%H:%M:%S", time.localtime()),
+        "device": {
+            "cpu_percent": cpu_percent,
+            "memory_percent": float(vm.percent),
+            "memory_used_gb": float(vm.used / (1024 ** 3)),
+            "memory_total_gb": float(vm.total / (1024 ** 3)),
+        },
+        "service": {
+            "pid": int(PROCESS.pid),
+            "process_cpu_percent": proc_cpu_percent,
+            "process_memory_mb": proc_mem_mb,
+            "uptime_sec": uptime_sec,
+        },
+        "chat": {
+            "sample_count": int(len(elapsed_vals)),
+            "latest_elapsed_ms": latest_elapsed,
+            "avg_elapsed_ms": avg_elapsed,
+            "p95_elapsed_ms": p95_elapsed,
+        },
+    }
 
-# 构建 Web 界面
-demo = gr.ChatInterface(
-    fn=predict,
-    title="检索式中文对话系统 (SimCSE)",
-    description=(
-        "系统使用 LCCC 语料进行检索。"
-    ),
-    examples=["最近有什么好看的电影推荐吗？", "毕业设计进度有点卡住了，好焦虑", "今天天气真不错～"],
-)
 
 if __name__ == "__main__":
-    # 启动界面
     try:
         print("系统正在启动，请稍候...")
-        get_dialog_matcher()
-        print("系统就绪，正在启动 Web 界面...")
-        demo.launch(server_name="127.0.0.1", server_port=7860, inbrowser=True)
+        # 启动前预热：确保首个请求不承担完整初始化延迟。
+        get_dialog_comparator()
+        print("系统就绪，正在启动本地 Web 服务: http://127.0.0.1:7860")
+        uvicorn.run(api_app, host="127.0.0.1", port=7860)
     except Exception as e:
         print(f"启动界面失败: {e}")

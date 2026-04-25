@@ -1,3 +1,11 @@
+"""
+train/config.py
+
+文件作用:
+	训练阶段路径与输出配置。
+	集中定义训练/验证/测试数据与模型输出目录。
+"""
+
 from pathlib import Path
 
 DATA_DIR = Path(__file__).resolve().parent / "data"
@@ -7,6 +15,7 @@ LCCC_small_DIR = DATA_DIR / "LCCC-small"
 TRAIN_JSON_PATH = str(LCCC_small_DIR / "LCCC-base_train.json")
 VALID_JSON_PATH = str(LCCC_small_DIR / "LCCC-base_valid.json")
 TEST_JSON_PATH = str(LCCC_small_DIR / "LCCC-base_test.json")
+
 TRAIN_NEG_CSV_PATH = str(DATA_DIR / "lccc_train_neg.csv")
 VALID_NEG_CSV_PATH = str(DATA_DIR / "lccc_valid_neg.csv")
 TEST_NEG_CSV_PATH = str(DATA_DIR / "lccc_test_neg.csv")
