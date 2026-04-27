@@ -1,5 +1,11 @@
 .vscode
 */__pycache__
+
+data_prep/LCCC-large
+data_prep/LCCC-small
+
+train/text2vec-base-chinese
+
 */data
 */results
 */models

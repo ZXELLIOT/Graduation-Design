@@ -35,7 +35,7 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from train.config import (
+from data_prep.data_prep_config import (
     TRAIN_NEG_CSV_PATH,
     VALID_NEG_CSV_PATH,
     TEST_NEG_CSV_PATH,
