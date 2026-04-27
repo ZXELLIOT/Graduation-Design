@@ -35,25 +35,6 @@ pip install -r requirements.txt
 
 python system/app.py
 
-默认访问地址：
-- 本地页面: http://127.0.0.1:7860
-- 元信息接口: http://127.0.0.1:7860/api/meta
-
-若本机已安装 cloudflared，服务启动后会自动尝试创建 quick tunnel，并在控制台打印公网地址。
-
-3. 运行训练（可选）
-
-python train/train.py --quick
-
-## 内网穿透（可选）
-
-默认启用自动穿透，可通过环境变量控制：
-- AUTO_TUNNEL_ENABLED=1 或 0：是否自动拉起 cloudflared
-- TUNNEL_LOCAL_URL=http://127.0.0.1:7860：穿透映射目标
-
-示例：
-- 禁用自动穿透后启动
-	- Windows PowerShell: $env:AUTO_TUNNEL_ENABLED="0"; python system/app.py
 
 ## 前端功能说明
 
@@ -73,11 +54,3 @@ python train/train.py --quick
 
 2) AI增强开启失败
 - 检查环境变量中是否配置有效的 API Key。
-
-3) 内网穿透未生成公网地址
-- 确认 cloudflared 已安装且可在终端直接执行。
-
-## 注意事项
-
-- 项目包含大模型与索引文件，建议不要提交到版本库。
-- 若要复现实验结果，请固定评测脚本中的随机种子配置。

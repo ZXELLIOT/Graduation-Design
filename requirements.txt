@@ -1,35 +1,20 @@
-# ===== 核心模型与训练 =====
 torch>=2.4.0
 transformers==5.5.4
 safetensors==0.7.0
 accelerate==1.13.0
-
-# ===== 向量检索 =====
 faiss-cpu>=1.7.0
-
-# ===== 数据处理与科学计算 =====
 numpy==2.4.4
 pandas==3.0.2
 scikit-learn==1.8.0
 scipy==1.17.1
 matplotlib==3.10.1
-
-# ===== 文本处理 =====
 jieba==0.42.1
 sentencepiece==0.2.1
 tokenizers==0.22.1
-
-# ===== 通用工具 =====
 tqdm==4.67.3
 requests==2.33.1
 python-dotenv==1.2.1
-
-# 系统性能监控（/api/perf、前端实时性能图）
 psutil==7.2.2
-
-# ===== 硬件监控（可选） =====
 nvidia-ml-py==13.595.45
-
-# ===== Web 服务 =====
 fastapi==0.135.2
 uvicorn==0.42.0

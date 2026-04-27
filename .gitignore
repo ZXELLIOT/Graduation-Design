@@ -1,50 +1,7 @@
-# Python cache and compiled files
-__pycache__/
-*.py[cod]
-*$py.class
-
-# Python test/cache tooling
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-.ipynb_checkpoints/
-
-# Virtual environments
-.env
-.env.*
-.venv
-venv/
-ENV/
-env/
-
-# Distribution / packaging
-build/
-dist/
-*.egg-info/
-pip-wheel-metadata/
-
-# Model and data files
-*.pt
-*.bin
-*.safetensors
-model/
-models/
-data/
-db/data/*.index
-db/data/*.csv
-
-# Runtime artifacts
-runtime/chat_logs/
-*.log
-
-# Tunnel / local dev tools
-.cloudflared/
-cloudflared.log
-
-# IDE
-.vscode/
-.idea/
-
-# OS
-.DS_Store
-Thumbs.db
+.vscode
+*/__pycache__
+*/data
+*/results
+*/models
+model
+runtime
