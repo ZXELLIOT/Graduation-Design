@@ -2,35 +2,44 @@
 tests/test_eval01_model_corr_speed.py
 
 评测目标:
-    将本项目训练的双塔模型与 4 个主流中文预训练模型进行基准对比。
-    在 5 个标准语义相似度数据集上统一评测，输出学术界常用的指标和图表。
+    参照 SimCSE 论文 (Gao et al., 2021, arXiv:2104.08821) 的评测方案，
+    将本项目训练的 SimCSE 双塔模型与主流中文预训练模型进行基准对比。
+
+评测方案（适配中文）:
+    本模型训练数据为中文 LCCC 对话语料，预训练基座为 text2vec-base-chinese
+    (BERT-base-chinese 架构)，仅支持中文。因此全部使用中文评测数据集。
 
 评测数据集:
-    0/1 二分类数据集（判断两句是否语义等价）:
-        - BQ (Bank Question):        银行金融领域问句匹配
-        - LCQMC:                     大规模中文问句匹配语料
-        - ATEC:                      支付宝金融问句相似度
-        - PAWS-X:                    跨语言释义检测
+    0/1 二分类数据集（5个，判断两句是否语义等价）:
+        - ATEC:   支付宝金融问句相似度 (20k 句对)
+        - BQ:     银行金融领域问句匹配 (10k)
+        - LCQMC:  大规模中文问句匹配语料, COLING 2018 (12.5k)
+        - PAWS-X: 跨语言释义检测, Google Research (2k)
+        - AFQMC:  蚂蚁金融问句匹配, CLUE Benchmark (2k)
 
-    0-5 回归数据集（判断两句语义相似程度）:
-        - STS-B:                     语义文本相似度基准
+    0-5 回归数据集（1个，原生中文语义相似度评分）:
+        - STS-B:  SemEval 2017 语义文本相似度基准中文翻译版 (1.4k)
+          注: 中文 0-5 数据集极为稀缺，STS-B 是目前唯一广泛使用的。
+
+评测指标（参照 SimCSE 论文）:
+    0/1 数据集: Accuracy, Precision, Recall, F1, AUC
+    0-5 数据集: Spearman 秩相关系数（ρ × 100）
+    排序质量:    Spearman 热力图（含全6个数据集，学术标准做法）
+    速度指标:   每句对平均编码耗时 (ms)
 
 评测模型:
-    - 本项目模型: mysimcse 双塔 (query_encoder)
-    - text2vec-base-chinese:         CoSENT 训练的中文句向量模型
-    - bert-base-chinese:             Google 原生中文 BERT
-    - chinese-roberta-wwm-ext:       哈工大中文 RoBERTa
-    - paraphrase-multilingual-MiniLM-L12-v2: 多语言轻量释义模型
-
-评测指标:
-    0/1 数据集: Accuracy, Precision, Recall, F1, AUC
-    0-5 数据集: Spearman 相关系数, Pearson 相关系数
-    速度指标: 每句对平均编码耗时 (ms)
+    - 本项目模型 (mysimcse):        SimCSE 两阶段微调双塔
+    - BGE-small-zh-v1.5:            智源研究院, C-MTEB 榜首系列
+    - text2vec-base-chinese:        CoSENT 中文句向量
+    - bert-base-chinese:            Google 中文 BERT
+    - chinese-roberta-wwm-ext:      哈工大讯飞中文 RoBERTa
+    - paraphrase-multilingual-MiniLM-L12-v2: 微软多语言轻量模型
 
 输出文件:
     - speed_compare.png:           各模型平均处理速度对比（含95%CI）
     - classification_heatmap.png:  0/1 数据集 AUC 热力图
-    - regression_compare.png:      0-5 数据集 Spearman 对比
+    - spearman_heatmap.png:        全数据集 Spearman 排序质量热力图
+    - regression_compare.png:      STS-B Spearman 对比（唯一原生0-5）
     - metrics_table.csv:           完整指标表格
 """
 
@@ -226,17 +235,17 @@ def _infer_task_type(dataset_name: str, labels: np.ndarray) -> str:
     自动推断数据集任务类型。
 
     规则:
-        - 名称含 sts/nli/snli/cmnli/ocnli → regression（语义评分）
+        - 名称含 stsb → regression（0-5 语义相似度评分，唯一原生中文 STS 数据集）
         - 标签仅含 0 和 1 → classification（0/1 二分类）
         - 其他 → regression
 
     说明:
-        NLI 数据集（CMNLI/OCNLI/SNLI-ZH）原本是分类任务，
-        但映射为语义相似度分数后用于 Spearman 评估，
-        这在中文嵌入模型评测中是常见做法。
+        STS-B 是目前唯一广泛使用的中文 0-5 语义相似度数据集。
+        对于二分类数据集，除用 Accuracy/AUC 评估外，也可用 Spearman
+        评估余弦相似度的排序质量——这是 C-MTEB 等基准的标准做法。
     """
     ds = dataset_name.lower()
-    if any(kw in ds for kw in ("sts", "nli", "snli")):
+    if "stsb" in ds:
         return "regression"
 
     uniq = np.unique(np.round(labels, 6))
@@ -616,42 +625,42 @@ def run_eval() -> None:
         )
         print(cls_summary.to_string(index=False))
 
-    # --- 图3: 0-5 数据集 Spearman 对比 ---
-    reg_df = df_all[df_all["任务类型"] == "regression"].copy()
-    if not reg_df.empty:
-        reg_group = reg_df.groupby(["模型", "随机种子"], as_index=False).agg(
+    # --- 图3: 全数据集 Spearman 热力图（含二分类+STS-B，学术标准做法）---
+    # 说明：Spearman 衡量余弦相似度排序与真实标签排序的一致性。
+    # 二分类数据集（0/1标签）用 Spearman 评估排序质量是 C-MTEB 等基准的标准做法。
+    all_spearman = df_all.pivot_table(
+        index="模型", columns="数据集", values="Spearman", aggfunc="mean"
+    ).fillna(0.0)
+    _heatmap_plot(
+        all_spearman,
+        os.path.join(out_dir, "spearman_heatmap.png"),
+        "全数据集 Spearman 排序质量对比（含0/1+0-5）",
+        "Spearman",
+    )
+
+    # 单独突出 STS-B（唯一原生 0-5 数据集）的 Spearman 柱状图
+    stsb_df = df_all[df_all["数据集"].str.lower().str.contains("stsb")].copy()
+    if not stsb_df.empty:
+        stsb_group = stsb_df.groupby(["模型", "随机种子"], as_index=False).agg(
             Spearman=("Spearman", "mean"),
             Pearson=("Pearson", "mean"),
         )
-        reg_summary: List[Dict[str, Any]] = []
-        for model_name in sorted(reg_group["模型"].unique()):
-            spearman_vals = reg_group[reg_group["模型"] == model_name]["Spearman"].values
-            pearson_vals = reg_group[reg_group["模型"] == model_name]["Pearson"].values
-            sp_mean, sp_ci = _mean_ci95(spearman_vals)
-            pr_mean, pr_ci = _mean_ci95(pearson_vals)
-            reg_summary.append(
-                {
-                    "模型": model_name,
-                    "Spearman": sp_mean,
-                    "Spearman95CI": sp_ci,
-                    "Pearson": pr_mean,
-                }
-            )
-        reg_model_df = pd.DataFrame(reg_summary).sort_values("Spearman", ascending=False)
-
+        stsb_summary = []
+        for mn in sorted(stsb_group["模型"].unique()):
+            sv = stsb_group[stsb_group["模型"] == mn]["Spearman"].values
+            pv = stsb_group[stsb_group["模型"] == mn]["Pearson"].values
+            sm, sc = _mean_ci95(sv)
+            pm, _ = _mean_ci95(pv)
+            stsb_summary.append({"模型": mn, "Spearman": sm, "Spearman95CI": sc, "Pearson": pm})
+        stsb_model_df = pd.DataFrame(stsb_summary).sort_values("Spearman", ascending=False)
         _bar_plot(
-            reg_model_df,
-            "模型",
-            "Spearman",
-            "0-5数据集 Spearman 相关系数对比（95%CI）",
-            os.path.join(out_dir, "regression_compare.png"),
-            "#2a9d8f",
+            stsb_model_df, "模型", "Spearman",
+            "STS-B 语义相似度 Spearman 对比（唯一原生0-5数据集，95%CI）",
+            os.path.join(out_dir, "regression_compare.png"), "#2a9d8f",
             err_col="Spearman95CI",
         )
-
-        # 打印回归指标摘要
-        print("\n===== 0-5 数据集指标摘要 =====")
-        print(reg_model_df.to_string(index=False))
+        print("\n===== STS-B (0-5) Spearman =====")
+        print(stsb_model_df.to_string(index=False))
 
     print(f"\n评测完成，结果保存至: {out_dir}")
 
