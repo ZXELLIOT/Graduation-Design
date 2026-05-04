@@ -143,25 +143,8 @@ clearCtxBtn.addEventListener("click", async () => {
 });
 
 // ============================================================
-// 初始化：轮询系统就绪状态
+// 初始化
 // ============================================================
 
-let systemReady = false;
-addMessage("系统正在后台加载模型和知识库，预计 10-30 秒...", "bot");
-setStatus("等待系统就绪...");
-
-async function checkReady() {
-  try {
-    const res = await fetch("/api/status");
-    const data = await res.json();
-    if (data.ready) {
-      systemReady = true;
-      chatWindow.innerHTML = "";
-      addMessage("你好！我是 SimCSE 检索式对话机器人，可以直接开始聊天。", "bot");
-      setStatus("就绪");
-      return;
-    }
-  } catch (e) {}
-  setTimeout(checkReady, 1500);
-}
-checkReady();
+addMessage("你好！我是 SimCSE 检索式对话机器人，可以直接开始聊天。", "bot");
+setStatus("就绪");
