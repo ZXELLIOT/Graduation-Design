@@ -16,8 +16,8 @@
     .entry-buttons { display: flex; gap: 16px; justify-content: center; align-items: flex-start; }
     .entry-btn { display: inline-block; padding: 12px 28px; border-radius: 10px; text-decoration: none; color: #fff; font-size: 1rem; font-weight: 600; transition: transform 0.2s, box-shadow 0.2s; }
     .entry-btn:hover { transform: translateY(-3px); box-shadow: 0 12px 28px rgba(0,0,0,0.15); }
-    .entry-btn.chat { background: linear-gradient(135deg, #1b7f79 0%, #2aa198 100%); }
-    .entry-btn.admin { background: linear-gradient(135deg, #f08a4b 0%, #d4733a 100%); }
+    .entry-btn.btn-chat { background: linear-gradient(135deg, #1b7f79 0%, #2aa198 100%); }
+    .entry-btn.btn-admin { background: linear-gradient(135deg, #f08a4b 0%, #d4733a 100%); }
     .entry-btn small { display: block; font-weight: 400; font-size: 0.8rem; margin-top: 4px; opacity: 0.85; }
   </style>
 </head>
@@ -50,8 +50,8 @@
     </div>
 
     <div class="entry-buttons">
-      <a href="/chat" class="entry-btn chat">开始对话</a>
-      <a href="/admin" class="entry-btn admin">后台管理</a>
+      <a href="/chat" class="entry-btn btn-chat">开始对话</a>
+      <a href="/admin" class="entry-btn btn-admin">后台管理</a>
     </div>
   </main>
 </body>
