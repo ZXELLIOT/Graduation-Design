@@ -184,7 +184,6 @@ def run_eval() -> None:
         "基准_bge-small": "bge-small-zh-v1.5",
         "基准_text2vec": "text2vec-base-chinese",
         "基准_bert": "bert-base-chinese",
-        "基准_roberta": "chinese-roberta-wwm-ext",
         "基准_minilm": "paraphrase-multilingual-MiniLM-L12-v2",
     }
 

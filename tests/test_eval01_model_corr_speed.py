@@ -32,7 +32,6 @@ tests/test_eval01_model_corr_speed.py
     - BGE-small-zh-v1.5:            智源研究院, C-MTEB 榜首系列
     - text2vec-base-chinese:        CoSENT 中文句向量
     - bert-base-chinese:            Google 中文 BERT
-    - chinese-roberta-wwm-ext:      哈工大讯飞中文 RoBERTa
     - paraphrase-multilingual-MiniLM-L12-v2: 微软多语言轻量模型
 
 输出文件:
@@ -496,7 +495,6 @@ def run_eval() -> None:
         "BGE-small-zh": "bge-small-zh-v1.5",
         "text2vec": "text2vec-base-chinese",
         "bert": "bert-base-chinese",
-        "roberta": "chinese-roberta-wwm-ext",
         "minilm": "paraphrase-multilingual-MiniLM-L12-v2",
     }
     device = engine.device
