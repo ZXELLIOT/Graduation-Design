@@ -3,7 +3,14 @@ system/comparator.py
 
 文件作用:
     对话匹配核心模块。
-    负责输入清洗、上下文拼接、候选召回和语义重排。
+
+核心检索流程（6步）:
+    步骤1: 输入清洗 — 去空格、截断、过滤无效输入
+    步骤2: 上下文判定 — 检测短文本/指代关键词，决定是否拼接历史
+    步骤3: Query 编码 — 将文本转为 768 维语义向量
+    步骤4: FAISS 粗召回 — 在 query_index 中快速召回 top-N 候选索引
+    步骤5: 加权重排 — 对候选分别计算问问相似度和问答相似度，加权融合排序
+    步骤6: 阈值过滤 — 最高分低于阈值则拒答，否则返回最优回复
 """
 
 import re
@@ -15,6 +22,12 @@ import numpy as np
 CandidateItem = Dict[str, Any]
 ScoredCandidate = Tuple[float, CandidateItem]
 TraceMeta = Dict[str, Any]
+
+
+# ============================================================
+# 对话匹配器 (DialogComparator)
+# 核心六大步骤：清洗 → 上下文 → 编码 → 粗召回 → 重排 → 过滤
+# ============================================================
 
 
 class DialogComparator:
@@ -399,7 +412,18 @@ class DialogComparator:
         user_input: str,
         history: Optional[List[Any]],
     ) -> Tuple[str, TraceMeta]:
-        """步骤1+2：输入清洗，并按规则决定是否拼接上下文。"""
+        """
+        步骤1+2：输入清洗 + 上下文拼接判定。
+
+        步骤1 — 输入清洗:
+            - 去多余空格、截断过长文本
+            - 过滤纯数字、纯符号等无效输入
+
+        步骤2 — 上下文拼接判定（多信号）:
+            - 短文本（≤4字）→ 直接拼接最近历史
+            - 命中关键词（你/它/这个...）→ 直接拼接
+            - 否则保持原输入不拼接
+        """
         cleaned_input = self._prepare_user_input(user_input)
         if not cleaned_input:
             return "", {
@@ -421,7 +445,17 @@ class DialogComparator:
         contextual_query: str,
         top_k_safe: int,
     ) -> Tuple[np.ndarray, List[int]]:
-        """步骤3+4：对查询编码，并进行粗召回。"""
+        """
+        步骤3+4：Query 编码 + FAISS 粗召回。
+
+        步骤3 — 编码:
+            将拼接后的文本通过 query_encoder 转为 768 维语义向量。
+            使用 LRU 缓存避免短时间内相同文本重复编码。
+
+        步骤4 — 粗召回:
+            在 query_index 中做近似最近邻搜索，召回 coarse_recall_count 个候选。
+            粗召回只取索引 ID，不做精细打分（速度优先）。
+        """
         user_query_np = self._encode_query_cached(contextual_query)
         if user_query_np.size == 0:
             return user_query_np, []
@@ -434,7 +468,19 @@ class DialogComparator:
         candidate_ids: List[int],
         top_k_safe: int,
     ) -> List[ScoredCandidate]:
-        """步骤5：对候选问句/答句做加权重排，返回 top-k。"""
+        """
+        步骤5：加权重排（语义融合打分）。
+
+        对每个候选同时计算两个相似度:
+            - 问问相似度: 用户向量 vs 候选问句向量（query_index.reconstruct）
+            - 问答相似度: 用户向量 vs 候选答句向量（response_index.reconstruct）
+
+        最终得分 = rerank_query_weight × 问问相似度 + rerank_reply_weight × 问答相似度
+
+        为什么这样设计?
+            单靠问问相似度可能找错回复（问句相似但答句不匹配），
+            加入问答相似度作为修正项能更准确地衡量"这个回复是否合适"。
+        """
         if self.query_index is None or self.response_index is None:
             return []
 

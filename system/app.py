@@ -36,7 +36,7 @@ from system.comparator_settings import apply_comparator_settings, comparator_set
 WEB_DIR = Path(CURRENT_DIR) / "web"
 SERVICE_START_TS = time.time()
 PROCESS = psutil.Process(os.getpid())
-AUTO_TUNNEL_ENABLED = os.getenv("AUTO_TUNNEL_ENABLED", "1") == "1"
+AUTO_TUNNEL_ENABLED = os.getenv("AUTO_TUNNEL_ENABLED", "0") == "1"
 TUNNEL_LOCAL_URL = os.getenv("TUNNEL_LOCAL_URL", "http://127.0.0.1:7860")
 _tunnel_process: Optional[subprocess.Popen[str]] = None
 _tunnel_url: str = ""

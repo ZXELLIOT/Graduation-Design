@@ -20,8 +20,23 @@ SENTENCE_POOLING = "cls"
 
 class SimCSEModelEngine:
     """
-    语义匹配引擎 (Embedding Engine)
-    负责加载预训练的双塔模型 (SimCSE Dual-Encoder)，并提供从原始文本到底层语义向量的转换服务。
+    语义匹配引擎 (Embedding Engine)。
+
+    核心职责:
+        加载预训练的双塔模型 (SimCSE Dual-Encoder)，提供"文本 → 语义向量"的转换服务。
+
+    两个编码器:
+        query_encoder:    编码用户输入的问句
+        response_encoder: 编码知识库中的答句
+
+    池化策略:
+        cls:             取 [CLS] 位置向量（BERT 标准做法，单向量代表整句含义）
+        mean:            所有有效 token 向量的平均值（更平滑，减少特殊位置偏好）
+        first_last_avg:  融合首层和末层特征后平均（多粒度语义，适合短文本匹配）
+
+    使用方式:
+        - 批量编码: engine.encode(texts, encoder='query', batch_size=32)
+        - 单条编码: engine.encode_one(text, encoder='query', return_numpy=True)
     """
 
     def __init__(self, model_dir: str = SIMCSE_MODEL_DIR, pooling: str = SENTENCE_POOLING):

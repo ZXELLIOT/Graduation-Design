@@ -90,7 +90,6 @@ def generate_ai_enhanced_reply(
     }
 
     try:
-        # 调用外部模型服务；失败时回退 top1，避免因网络波动中断会话。
         resp = requests.post(responses_url, headers=headers, json=payload, timeout=timeout_sec)
         resp.raise_for_status()
         text = _extract_ai_output_text(resp.json())

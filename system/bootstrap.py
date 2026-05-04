@@ -34,7 +34,17 @@ _dialog_comparator_instance: Optional[DialogComparator] = None
 
 
 def _read_faiss_index_safely(index_path: str) -> Any:
-    """优先以内存映射只读方式加载索引，失败时回退常规读取。"""
+    """
+    安全加载 FAISS 索引文件。
+
+    加载策略（优先级从高到低）:
+        1. 内存映射只读模式 (IO_FLAG_MMAP | IO_FLAG_READ_ONLY)
+           — 共享内存，多进程友好，不复制数据
+        2. 内存映射模式（仅 IO_FLAG_MMAP）
+           — 适用于低版本 faiss 绑定不支持双 flag 的情况
+        3. 常规读取模式
+           — 兜底方案，会复制索引数据到进程内存
+    """
     io_flag_mmap = int(getattr(faiss, "IO_FLAG_MMAP", 0))
     io_flag_ro = int(getattr(faiss, "IO_FLAG_READ_ONLY", 0))
     io_flags = io_flag_mmap | io_flag_ro
@@ -129,7 +139,7 @@ def initialize_system() -> DialogComparator:
     print("              日常闲聊机器人本地服务 启动中             ")
     print("==========================================================\n")
 
-    # 1) 运行依赖检查：文件存在 + 快速可读性。
+    # 步骤1：运行依赖检查 — 确认 CSV 和 FAISS 索引文件存在且可读
     print("[1/4] 正在检查知识库数据索引...")
     exists_ok, missing_files = check_kb_exists()
     if not exists_ok:
@@ -140,15 +150,15 @@ def initialize_system() -> DialogComparator:
     if not validate_ok:
         raise RuntimeError(f"数据库异常: {validate_msg}")
 
-    # 2) 加载文本编码引擎（query/response 双塔）。
+    # 步骤2：加载双塔编码引擎 — query encoder + response encoder
     print("[2/4] 正在加载语义模型引擎...")
     engine = SimCSEModelEngine()
 
-    # 3) 加载向量索引与文本列。
+    # 步骤3：加载 FAISS 双索引与文本列 — query_index + response_index + CSV
     print("[3/4] 正在主流程加载数据库...")
     query_index, response_index, query_texts, reply_texts = load_database_columns(prefix=DB_PREFIX)
 
-    # 4) 组装比较器：统一承载召回、重排、阈值与上下文策略。
+    # 步骤4：组装比较器 — 统一承载召回、重排、阈值与上下文策略
     print("[4/4] 正在初始化匹配模块...")
     comparator = DialogComparator(
         model_engine=engine,

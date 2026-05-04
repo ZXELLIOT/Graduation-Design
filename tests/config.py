@@ -26,5 +26,5 @@ DB_DATA_DIR = str(PROJECT_ROOT / "db" / "data")
 RETRIEVAL_JUDGE_MODE = os.getenv("RETRIEVAL_JUDGE_MODE", "auto")  # auto / ark / local
 ARK_RESPONSES_URL = os.getenv("ARK_RESPONSES_URL", "https://ark.cn-beijing.volces.com/api/v3/responses")
 ARK_MODEL_NAME = os.getenv("ARK_MODEL_NAME", "doubao-seed-2-0-mini-260215")
-ARK_API_KEY = os.getenv("ARK_API_KEY", "ark-8580122c-c8a0-4863-bf54-2cf9dfbb4fd5-ccb90")
+ARK_API_KEY = os.getenv("ARK_API_KEY", "")
 ARK_TIMEOUT_SEC = float(os.getenv("ARK_TIMEOUT_SEC", "20"))

@@ -53,7 +53,8 @@ def infer(user_input: str, history: Optional[List[List[str]]] = None) -> Dict[st
             },
         }
 
-    # 分支 A：关闭 AI 增强时，走本地比较器直接返回。
+    # 分支 A：AI 增强关闭 → 纯本地检索链路
+    # 流程: 输入 → 比较器(清洗→上下文→编码→粗召回→重排) → 返回最优回复
     if not runtime_ai_settings.get("enabled", False):
         reply, score, matched_q, matched_item, result_type, used_query, trace_meta = comparator.compare_with_meta(
             user_input,
@@ -77,7 +78,10 @@ def infer(user_input: str, history: Optional[List[List[str]]] = None) -> Dict[st
             "trace": _safe_trace(trace_meta),
         }
 
-    # 分支 B：开启 AI 增强时，先取本地 top-k 候选，再决定是否调用外部模型融合。
+    # 分支 B：AI 增强开启 → 检索 + AI 融合链路
+    # 流程: 输入 → 比较器(取 top-k 候选) → 候选质量检查 →
+    #       通过阈值 → 调用大模型融合候选 → 返回 AI 润色后的回复
+    #       低于阈值 → 拒答（不回退到低质量本地结果）
     used_query, candidates, trace_meta = comparator.get_topk_candidates_with_meta(
         user_input=user_input,
         history=safe_history,
