@@ -38,7 +38,7 @@ if PROJECT_ROOT not in sys.path:
 
 from system.bootstrap import load_database_columns
 from system.comparator import DialogComparator
-from system.config import DB_PREFIX
+
 from system.model_engine import SimCSEModelEngine
 from tests.tests_config import TEST_DATA_DIR, TEST_RESULTS_DIR
 
@@ -173,7 +173,7 @@ def run_eval() -> None:
 
     # 加载全量语料库
     engine = SimCSEModelEngine()
-    query_index, response_index, text_store = load_database_columns(prefix=DB_PREFIX)
+    query_index, response_index, text_store = load_database_columns()
     query_texts = [text_store.get_query(i) for i in range(len(text_store))]
     reply_texts = [text_store.get_response(i) for i in range(len(text_store))]
     print(f"全量语料库规模: {len(text_store)} 条")

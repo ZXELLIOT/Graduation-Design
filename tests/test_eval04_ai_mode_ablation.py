@@ -43,7 +43,6 @@ from system.config import (
     AI_ENHANCE_MODEL_NAME,
     AI_ENHANCE_RESPONSES_URL,
     AI_ENHANCE_TIMEOUT_SEC,
-    DB_PREFIX,
 )
 from system.model_engine import SimCSEModelEngine
 from tests.tests_config import TEST_DATA_DIR, TEST_RESULTS_DIR
@@ -163,7 +162,7 @@ def run_eval() -> None:
 
     # 初始化系统
     engine = SimCSEModelEngine()
-    query_index, response_index, text_store = load_database_columns(prefix=DB_PREFIX)
+    query_index, response_index, text_store = load_database_columns()
     query_texts = [text_store.get_query(i) for i in range(len(text_store))]
     reply_texts = [text_store.get_response(i) for i in range(len(text_store))]
     comparator = DialogComparator(

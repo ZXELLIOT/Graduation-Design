@@ -32,18 +32,14 @@ SIMCSE_MODEL_DIR = str(PROJECT_ROOT / "model" / "mysimcse")
 # 数据库路径配置
 # ============================================================
 
-# 数据库前缀（用于拼接索引文件名，如 large_faiss_db_query.index）
-DB_PREFIX = "large"
-
 # 数据库文件目录（CSV 语料 + FAISS 索引）
 DB_DATA_DIR = str(PROJECT_ROOT / "db" / "data")
 
-# 语料 CSV 路径（query, response 两列）
-DB_CSV_PATH = str(Path(DB_DATA_DIR) / "lccc_large.csv")
+# 语料 CSV 路径
+DB_CSV_PATH = str(Path(DB_DATA_DIR) / "system_data.csv")
 
-# FAISS 双索引文件路径
-DB_QUERY_INDEX_FILE = str(Path(DB_DATA_DIR) / f"{DB_PREFIX}_faiss_db_query.index")
-DB_RESPONSE_INDEX_FILE = str(Path(DB_DATA_DIR) / f"{DB_PREFIX}_faiss_db_response.index")
+# FAISS 问句索引文件
+DB_QUERY_INDEX_FILE = str(Path(DB_DATA_DIR) / "query.index")
 
 # ============================================================
 # 对话匹配参数
