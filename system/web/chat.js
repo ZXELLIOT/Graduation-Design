@@ -1,6 +1,5 @@
 /**
- * chat.js — 普通对话页面
- * 简洁的聊天界面，支持 AI 增强和上下文匹配开关
+ * chat.js — 对话页面
  */
 
 const chatWindow = document.getElementById("chat-window");
@@ -8,6 +7,7 @@ const chatForm = document.getElementById("chat-form");
 const chatInput = document.getElementById("chat-input");
 const sendBtn = document.getElementById("send-btn");
 const clearChatBtn = document.getElementById("clear-chat");
+const clearCtxBtn = document.getElementById("clear-ctx");
 const statusNode = document.getElementById("status");
 const aiToggle = document.getElementById("ai-toggle");
 const ctxToggle = document.getElementById("ctx-toggle");
@@ -16,7 +16,7 @@ let history = [];
 let conversationId = null;
 
 // ============================================================
-// 消息渲染
+// 消息
 // ============================================================
 
 function addMessage(text, role) {
@@ -27,13 +27,37 @@ function addMessage(text, role) {
   chatWindow.scrollTop = chatWindow.scrollHeight;
 }
 
+function addLoading() {
+  const div = document.createElement("div");
+  div.className = "msg msg-bot";
+  div.id = "loading-msg";
+  div.innerHTML = '<span style="display:inline-flex;gap:4px;"><span class="dot">.</span><span class="dot">.</span><span class="dot">.</span></span>';
+  chatWindow.appendChild(div);
+  chatWindow.scrollTop = chatWindow.scrollHeight;
+  // Animate dots
+  let i = 0;
+  const dots = div.querySelectorAll(".dot");
+  div._interval = setInterval(() => {
+    dots.forEach((d, j) => { d.style.opacity = j === i % 3 ? "1" : "0.3"; });
+    i++;
+  }, 300);
+}
+
+function removeLoading() {
+  const el = document.getElementById("loading-msg");
+  if (el) {
+    if (el._interval) clearInterval(el._interval);
+    el.remove();
+  }
+}
+
 function setStatus(text, isError) {
   statusNode.textContent = text;
   statusNode.style.color = isError ? "#d03838" : "#1f9d55";
 }
 
 // ============================================================
-// 发送消息
+// 发送
 // ============================================================
 
 async function sendMessage(message) {
@@ -46,35 +70,8 @@ async function sendMessage(message) {
   return await res.json();
 }
 
-// ============================================================
-// 开关同步到后端
-// ============================================================
-
-async function syncToggle(key, value) {
-  const payload = {};
-  if (key === "ai") payload.ai_enhanced = value;
-  if (key === "ctx") payload.context_matching_enabled = value;
-  try {
-    await fetch("/api/settings/comparator", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-  } catch (e) { /* 静默失败 */ }
-}
-
-aiToggle.addEventListener("change", () => syncToggle("ai", aiToggle.checked));
-ctxToggle.addEventListener("change", () => syncToggle("ctx", ctxToggle.checked));
-
-// ============================================================
-// 事件绑定
-// ============================================================
-
 chatInput.addEventListener("keydown", (e) => {
-  if (e.key === "Enter" && !e.shiftKey) {
-    e.preventDefault();
-    chatForm.requestSubmit();
-  }
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); chatForm.requestSubmit(); }
 });
 
 chatForm.addEventListener("submit", async (e) => {
@@ -83,27 +80,51 @@ chatForm.addEventListener("submit", async (e) => {
   if (!msg) return;
 
   addMessage(msg, "user");
+  addLoading();
   setStatus("思考中...");
   chatInput.value = "";
   chatInput.disabled = true;
-  if (sendBtn) sendBtn.disabled = true;
+  sendBtn.textContent = "发送中...";
+  sendBtn.disabled = true;
 
   try {
     const data = await sendMessage(msg);
     conversationId = data.conversation_id;
+    removeLoading();
     addMessage(data.reply, "bot");
     history.push([msg, data.reply]);
     if (history.length > 10) history = history.slice(-10);
-    setStatus(`相似度 ${Number(data.score).toFixed(3)} | ${Number(data.elapsed_ms).toFixed(0)}ms${data.ai_enhanced ? " | AI增强" : ""}`);
+    const aiTag = data.ai_enhanced ? " | AI增强" : "";
+    setStatus(`相似度 ${Number(data.score).toFixed(3)} | ${Number(data.elapsed_ms).toFixed(0)}ms${aiTag}`);
   } catch (err) {
-    setStatus("请求失败，请重试", true);
+    removeLoading();
+    setStatus("请求失败，请检查服务状态", true);
     addMessage("系统暂时不可用，请稍后重试。", "bot");
   } finally {
     chatInput.disabled = false;
     chatInput.focus();
-    if (sendBtn) sendBtn.disabled = false;
+    sendBtn.textContent = "发送";
+    sendBtn.disabled = false;
   }
 });
+
+// ============================================================
+// 开关
+// ============================================================
+
+async function syncToggle(key, value) {
+  const payload = {};
+  if (key === "ai") payload.ai_enhanced = value;
+  if (key === "ctx") payload.context_matching_enabled = value;
+  try { await fetch("/api/settings/comparator", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) }); } catch (e) {}
+}
+
+aiToggle.addEventListener("change", () => syncToggle("ai", aiToggle.checked));
+ctxToggle.addEventListener("change", () => syncToggle("ctx", ctxToggle.checked));
+
+// ============================================================
+// 清除
+// ============================================================
 
 clearChatBtn.addEventListener("click", () => {
   history = [];
@@ -113,7 +134,7 @@ clearChatBtn.addEventListener("click", () => {
   setStatus("对话已清空");
 });
 
-document.getElementById("clear-ctx").addEventListener("click", async () => {
+clearCtxBtn.addEventListener("click", async () => {
   try {
     const res = await fetch("/api/context/clear", { method: "POST" });
     const data = await res.json();
@@ -122,7 +143,32 @@ document.getElementById("clear-ctx").addEventListener("click", async () => {
 });
 
 // ============================================================
-// 初始化
+// 初始化：预热系统
 // ============================================================
 
-addMessage("你好！我是 SimCSE 检索式对话机器人，可以直接开始聊天。", "bot");
+let systemReady = false;
+addMessage("系统正在加载模型和知识库，请稍候...", "bot");
+setStatus("初始化中，首次加载约需 10-30 秒...");
+
+async function warmup() {
+  try {
+    const res = await fetch("/api/meta");
+    if (res.ok) {
+      systemReady = true;
+      removeLoading();
+      // 清除预热消息
+      chatWindow.innerHTML = "";
+      addMessage("你好！我是 SimCSE 检索式对话机器人，可以直接开始聊天。", "bot");
+      setStatus("就绪");
+    }
+  } catch (e) {
+    // 继续重试
+    setTimeout(warmup, 3000);
+  }
+}
+
+// 先发一个请求触发首次初始化（bootstrap 是懒加载单例）
+fetch("/api/meta").then(r => {
+  if (r.ok) { warmup(); }
+  else { setTimeout(warmup, 2000); }
+}).catch(() => setTimeout(warmup, 2000));

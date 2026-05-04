@@ -17,6 +17,9 @@
     .composer { display: grid; grid-template-columns: 1fr auto; gap: 10px; }
     #chat-input { width: 100%; resize: none; border: 1px solid #e8d6b4; border-radius: 10px; padding: 11px; font-size: 15px; background: #fff; }
     .status { color: #1f9d55; font-size: 0.8rem; margin: 4px 0 0; }
+    .dot { font-size: 1.5rem; font-weight: 700; transition: opacity 0.2s; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid #e8d6b4; border-top-color: #1b7f79; border-radius: 50%; animation: spin 0.8s linear infinite; vertical-align: middle; margin-right: 4px; }
   </style>
 </head>
 <body>
