@@ -115,15 +115,15 @@ class DialogComparator:
         # 上下文记忆（独立于对话历史，可通过 /api/context/clear 归零）
         self.context_memory: List[str] = []
 
+        # 轻量查询向量缓存：减少短时间内重复文本的重复编码开销。
+        self._query_vec_cache: OrderedDict[str, np.ndarray] = OrderedDict()
+        self._query_vec_cache_max_size = 1024
+
     def clear_context_memory(self) -> int:
         """清除上下文记忆，返回清除的条数。"""
         n = len(self.context_memory)
         self.context_memory.clear()
         return n
-
-        # 轻量查询向量缓存：减少短时间内重复文本的重复编码开销。
-        self._query_vec_cache: OrderedDict[str, np.ndarray] = OrderedDict()
-        self._query_vec_cache_max_size = 1024
 
     def _normalize_rerank_weights(self, rerank_weights: Tuple[float, float]) -> Tuple[float, float]:
         """规范化重排权重，确保非负且和不为 0。"""
