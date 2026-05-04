@@ -3,7 +3,22 @@ train/train.py
 
 文件作用:
     双塔检索模型训练主脚本。
-    包含数据加载、阶段训练、自动降批重试、验证评估与模型导出。
+
+训练策略（两阶段微调 Two-Stage Fine-Tuning）:
+    阶段1 — 无监督 SimCSE:
+        仅使用问句（query），通过 BERT 内置 Dropout 对同一句子两次前向传播
+        产生两个略有差异的向量作为正样本对，让模型学会区分不同句子的语义。
+        目标：将通用预训练模型转化为能理解对话语义倾向的基础编码器。
+
+    阶段2 — 有监督匹配:
+        使用 (问句, 正样本回复, 负样本回复) 三元组，通过对比损失训练模型
+        让问句与正确回复的相似度高于错误回复。
+        目标：让模型具备精确区分正确/错误回复的判别力。
+
+其他特性:
+    - CUDA OOM 自动降 batch size 重试
+    - 混合精度 (FP16) + torch.compile 加速
+    - 断点可复现的随机种子与数据加载
 """
 
 import os
@@ -175,8 +190,13 @@ def _apply_quick_cap(size_value: int, cap: int) -> int:
     return min(int(size_value), cap)
 
 
+# ============================================================
+# 数据集类 (Dataset)
+# ============================================================
+
+
 class PositivePairDataset(Dataset):
-    """正样本对数据集：query, response。"""
+    """正样本对数据集：每条数据为 (query, response)。"""
 
     def __init__(self, queries, responses):
         """初始化正样本对数据集。
@@ -328,8 +348,31 @@ class TrainDataLoader:
             progress.close()
 
 
+# ============================================================
+# 双塔模型 (Dual Encoder)
+# ============================================================
+
+
 class DualEncoderModel(nn.Module):
-    """双编码器模型，分别处理问句和回复，实现向量匹配。"""
+    """
+    双编码器模型（Dual Encoder / Two-Tower Model）。
+
+    核心思想:
+        问句和回复各自通过独立的编码器转换为向量，计算相似度时使用向量点积。
+
+    两个编码器:
+        - query_encoder:    对用户输入的问句编码
+        - response_encoder: 对候选回复编码
+
+    为什么用双塔而非单塔？
+        单塔（如 BERT 做句对分类）需要在推理时把所有候选对逐对输入模型，
+        速度太慢。双塔可以预先计算所有回复的向量存在 FAISS 里，推理时
+        只需编码问句一次，在向量空间中做近似最近邻搜索，速度提升巨大。
+
+    池化策略:
+        cls:            取 [CLS] 位置向量（BERT 标准做法，单向量代表整句）
+        mean:           对所有 token 向量取平均（更平滑，但对齐性略弱）
+    """
 
     def __init__(self, model_name_or_path, pooling_strategy='cls', temperature=0.05, local_files_only=False):
         """初始化双塔模型。
@@ -559,6 +602,11 @@ def _run_stage_with_auto_batch(
     ) from last_error
 
 
+# ============================================================
+# 阶段1：无监督 SimCSE 训练
+# ============================================================
+
+
 def train_or_eval_stage1(
     model,
     tokenizer,
@@ -637,6 +685,11 @@ def train_or_eval_stage1(
     if batch_count == 0:
         return float('inf')
     return total_loss / batch_count
+
+
+# ============================================================
+# 阶段2：有监督匹配训练（三元组对比）
+# ============================================================
 
 
 def train_or_eval_stage2(
@@ -733,11 +786,13 @@ def _run_stage(
     scaler,
     train_eval_fn,
 ):
-    """执行单个训练阶段（含训练和验证）。
+    """
+    执行单个训练阶段（含训练和验证）。
 
-    参数:
-        stage_name: 阶段名称。
-        model: 训练模型。
+    训练组件:
+        - 优化器: AdamW（带 weight decay 的 Adam，防止过拟合）
+        - 调度器: 线性预热 + 线性衰减（前 5% 步数从 0 线性增长到目标学习率）
+        - 梯度裁剪: max_norm=1.0（防止梯度爆炸）
         tokenizer: 分词器。
         train_dataloader: 训练集加载器。
         valid_dataloader: 验证集加载器。
@@ -784,12 +839,28 @@ def _run_stage(
         logger.info(f'{stage_name} - Epoch {epoch + 1} 完成，Train Loss: {avg_train_loss:.4f}，Val Loss: {valid_loss:.4f}')
 
 
+# ============================================================
+# 训练主流程入口
+# ============================================================
+
+
 def train_model():
-    """训练全流程入口。
-    
-    采用两阶段微调（Two-Stage Fine-tuning）：
-    1. 第一阶段：无监督 SimCSE。将通用 BERT 转化为能够理解对话语义倾向的模型。
-    2. 第二阶段：有监督匹配训练。使用正负样本对，让模型具备区分正确/错误回复的判别力。
+    """
+    两阶段微调全流程入口。
+
+    阶段1（无监督 SimCSE）:
+        仅用 query 列，同句两次前向产生正样本对 → 构建基础语义空间。
+        损失函数: 批内交叉熵（同一句子的两次视角互为正样本）。
+
+    阶段2（有监督匹配）:
+        使用 (query, response, negative_response) 三元组 →
+        训练模型区分正确/错误回复的能力。
+        损失函数: 二分类交叉熵（正样本 logit vs 负样本 logit）。
+
+    输出:
+        model/mysimcse/query_encoder/   — 问句编码器
+        model/mysimcse/response_encoder/ — 答句编码器
+        model/mysimcse/tokenizer 文件    — 分词器
     """
     # 默认超参数配置
     defaults = {
