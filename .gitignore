@@ -1,5 +1,6 @@
 # === IDE ===
 .vscode/
+.claude/
 
 # === Python ===
 __pycache__/
