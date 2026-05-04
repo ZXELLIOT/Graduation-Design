@@ -92,13 +92,13 @@ AI_ENHANCE_RESPONSES_URL = os.getenv(
     "https://ark.cn-beijing.volces.com/api/v3/responses",
 )
 
-# API Key（必须在 .env 中配置 ARK_API_KEY，不提供默认值避免密钥泄露）
+# API Key
 AI_ENHANCE_API_KEY = os.getenv("ARK_API_KEY", "")
 
 # 请求超时时间（秒）
 AI_ENHANCE_TIMEOUT_SEC = float(os.getenv("ARK_TIMEOUT_SEC", "20"))
 
 # ============================================================
-# 后台管理密码（修改此值或在 .env 中设置 ADMIN_PASSWORD）
+# 后台管理密码
 # ============================================================
-ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "simcse2024")
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "simcse2026")

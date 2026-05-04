@@ -163,7 +163,9 @@ def run_eval() -> None:
 
     # 初始化系统
     engine = SimCSEModelEngine()
-    query_index, response_index, query_texts, reply_texts = load_database_columns(prefix=DB_PREFIX)
+    query_index, response_index, text_store = load_database_columns(prefix=DB_PREFIX)
+    query_texts = [text_store.get_query(i) for i in range(len(text_store))]
+    reply_texts = [text_store.get_response(i) for i in range(len(text_store))]
     comparator = DialogComparator(
         model_engine=engine,
         query_index=query_index,

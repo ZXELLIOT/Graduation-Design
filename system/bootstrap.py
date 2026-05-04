@@ -14,6 +14,7 @@ import pandas as pd
 
 from system.comparator import DialogComparator
 from system.model_engine import SimCSEModelEngine
+from system.text_store import TextStore
 from system.config import (
     DB_DATA_DIR,
     DB_CSV_PATH,
@@ -94,8 +95,8 @@ def validate_database() -> Tuple[bool, str]:
 
 
 
-def load_database_columns(prefix: str) -> Tuple[Any, Any, List[str], List[str]]:
-    """加载数据库索引与文本列（轻量模式，不构建 doc_texts 字典列表）。"""
+def load_database_columns(prefix: str) -> Tuple[Any, Any, TextStore]:
+    """加载数据库索引与文本偏移索引（内存友好模式）。"""
     db_base_path = os.path.join(DB_DATA_DIR, f"{prefix}_faiss_db")
     query_index_path = db_base_path + "_query.index"
     response_index_path = db_base_path + "_response.index"
@@ -104,16 +105,11 @@ def load_database_columns(prefix: str) -> Tuple[Any, Any, List[str], List[str]]:
     try:
         response_index = _read_faiss_index_safely(response_index_path)
     except MemoryError:
-        # 大库场景下 response_index 可能触发 bad_alloc，兜底复用 query_index 保证流程可运行。
         print("[WARN] response_index 加载内存不足，已退化为复用 query_index。")
         response_index = query_index
 
-    required_rows = min(int(query_index.ntotal), int(response_index.ntotal))
-    pair_df = pd.read_csv(DB_CSV_PATH, usecols=["query", "response"], nrows=required_rows)
-
-    csv_queries = pair_df["query"].astype(str).tolist()
-    csv_replies = pair_df["response"].astype(str).tolist()
-    return query_index, response_index, csv_queries, csv_replies
+    text_store = TextStore(DB_CSV_PATH)
+    return query_index, response_index, text_store
 
 
 def initialize_system() -> DialogComparator:
@@ -137,9 +133,9 @@ def initialize_system() -> DialogComparator:
     print("[2/4] 加载语义模型...")
     engine = SimCSEModelEngine()
 
-    # 步骤3：加载 FAISS 双索引与文本列 — query_index + response_index + CSV
+    # 步骤3：加载 FAISS 双索引与文本偏移索引
     print("[3/4] 加载向量索引...")
-    query_index, response_index, query_texts, reply_texts = load_database_columns(prefix=DB_PREFIX)
+    query_index, response_index, text_store = load_database_columns(prefix=DB_PREFIX)
 
     # 步骤4：组装比较器 — 统一承载召回、重排、阈值与上下文策略
     print("[4/4] 初始化匹配引擎...")
@@ -148,8 +144,7 @@ def initialize_system() -> DialogComparator:
         query_index=query_index,
         response_index=response_index,
         doc_texts=[],
-        query_texts=query_texts,
-        reply_texts=reply_texts,
+        text_store=text_store,
         similarity_threshold=SIMILARITY_THRESHOLD,
         rerank_weights=RERANK_WEIGHTS,
         context_max_turns=CONTEXT_MAX_TURNS,

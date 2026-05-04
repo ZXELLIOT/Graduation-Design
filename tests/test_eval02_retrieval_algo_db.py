@@ -173,8 +173,10 @@ def run_eval() -> None:
 
     # 加载全量语料库
     engine = SimCSEModelEngine()
-    query_index, response_index, query_texts, reply_texts = load_database_columns(prefix=DB_PREFIX)
-    print(f"全量语料库规模: {len(query_texts)} 条")
+    query_index, response_index, text_store = load_database_columns(prefix=DB_PREFIX)
+    query_texts = [text_store.get_query(i) for i in range(len(text_store))]
+    reply_texts = [text_store.get_response(i) for i in range(len(text_store))]
+    print(f"全量语料库规模: {len(text_store)} 条")
 
     # ============================================================
     # 准备：一次性编码所有测试问句（节省重复编码）

@@ -39,4 +39,3 @@ def apply_ai_runtime_settings(ai_enhanced: Any = None) -> None:
         if bool(ai_enhanced) and not AI_ENHANCE_API_KEY:
             raise HTTPException(status_code=400, detail="AI 增强开启失败：未配置 ARK_API_KEY。")
         runtime_ai_settings["enabled"] = bool(ai_enhanced)
-

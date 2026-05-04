@@ -45,6 +45,7 @@ class DialogComparator:
         similarity_threshold,
         query_texts: Optional[List[str]] = None,
         reply_texts: Optional[List[str]] = None,
+        text_store: Any = None,
         rerank_weights=(0.75, 0.25),
         context_max_turns=3,
         max_text_len=64,
@@ -81,13 +82,17 @@ class DialogComparator:
         self.query_index = query_index
         self.response_index = response_index
         self.doc_texts: List[dict] = doc_texts if isinstance(doc_texts, list) else []
-        if query_texts is not None and reply_texts is not None:
-            self.query_texts: List[str] = [str(x) for x in query_texts]
-            self.reply_texts: List[str] = [str(x) for x in reply_texts]
+        self.text_store = text_store
+        if text_store is not None:
+            self.doc_count = len(text_store)
+        elif query_texts is not None and reply_texts is not None:
+            self.query_texts = [str(x) for x in query_texts]
+            self.reply_texts = [str(x) for x in reply_texts]
+            self.doc_count = min(len(self.query_texts), len(self.reply_texts))
         else:
             self.query_texts = [str(item.get("query", "") or "") for item in self.doc_texts]
             self.reply_texts = [str(item.get("reply", "") or "") for item in self.doc_texts]
-        self.doc_count = min(len(self.query_texts), len(self.reply_texts))
+            self.doc_count = min(len(self.query_texts), len(self.reply_texts))
         self.fast_candidate_multiplier = 50
         self.fast_candidate_min = 200
         # 显式粗召回数量：0 表示启用自适应计算（兼容旧逻辑）。
@@ -167,13 +172,17 @@ class DialogComparator:
         """按索引获取问句文本。"""
         if idx < 0 or idx >= self.doc_count:
             return ""
-        return self.query_texts[idx]
+        if self.text_store is not None:
+            return self.text_store.get_query(idx)
+        return self.query_texts[idx] if hasattr(self, "query_texts") else ""
 
     def _get_reply_text(self, idx: int) -> str:
         """按索引获取答句文本。"""
         if idx < 0 or idx >= self.doc_count:
             return ""
-        return self.reply_texts[idx]
+        if self.text_store is not None:
+            return self.text_store.get_response(idx)
+        return self.reply_texts[idx] if hasattr(self, "reply_texts") else ""
 
     def _build_item(self, idx: int) -> CandidateItem:
         """按索引构建候选条目。"""
