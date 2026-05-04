@@ -3,7 +3,14 @@ db/encoder_module.py
 
 文件作用:
     语料向量化与索引入库模块。
-    负责读取语料、编码问答向量并构建/保存 FAISS 双索引。
+
+核心流程:
+    1. 分块读取语料 CSV → 2. 双塔编码 (query/response) →
+    3. 写入 FAISS 双索引 → 4. 定期检查点落盘（支持断点续跑）
+
+索引策略:
+    - 小规模数据 (<10000): HNSW 图索引（精度高、内存占用大）
+    - 大规模数据 (>10000): IVF-PQ 压缩索引（牺牲少量精度换取内存效率）
 """
 
 import os
@@ -25,9 +32,26 @@ if SYSTEM_DIR not in sys.path:
 from system.model_engine import SimCSEModelEngine
 from db.config import DB_CSV_PATH, DB_BUILD_BASE_PATH
 
+# 默认向量维度（bert-base-chinese / text2vec-base-chinese 均为 768）
+# 若更换为其他预训练模型（如 1024 维），只需修改此处即可
+DEFAULT_VECTOR_DIM = 768
+
+
+# ============================================================
+# 数据读取模块 (DataLoader)
+# 负责从 CSV 中高效读取语料，支持全量/采样/分块流式三种模式
+# ============================================================
+
 
 class DataLoader:
-    """数据读取模块：负责从 CSV 中高效读取问答语料。"""
+    """
+    数据读取模块：从 CSV 中加载问答语料。
+
+    三种读取模式:
+        load_corpus:      一次性加载全量数据到内存
+        iter_corpus:      分块流式迭代（大语料推荐，避免内存溢出）
+        resolve_target_rows: 仅查询行数，不加载数据
+    """
 
     @staticmethod
     def _count_csv_rows(csv_path: str) -> int:
@@ -158,11 +182,24 @@ class DataLoader:
         progress.close()
 
 
+# ============================================================
+# 向量数据库模块 (VectorDB)
+# 负责构建和读写 FAISS 双索引（query 索引 + response 索引）
+# ============================================================
+
+
 class VectorDB:
     """
-    向量数据库读写模块：
-    1. 写入 query/response 双索引
-    2. 从双索引和 CSV 恢复文本映射
+    向量数据库读写模块。
+
+    两个索引的作用:
+        query_index:    存储历史问句向量 → 用户输入与历史问句匹配，粗召回候选
+        response_index: 存储对应答句向量 → 重排时计算用户输入与候选答句的相似度
+
+    为什么需要双索引？
+        单索引只能回答"用户输入和哪个历史问句最像"。
+        双索引额外计算"用户输入和候选答句的匹配度"，通过加权融合
+        (问问相似度, 问答相似度) 得到更准确的最终排序。
     """
 
     def __init__(self, dimension: int = 768):
@@ -194,25 +231,36 @@ class VectorDB:
 
     @staticmethod
     def _build_index(dimension: int, use_ivf=False, n_total=0):
-        """按数据规模构建索引对象。
+        """
+        按数据规模选择合适的 FAISS 索引结构。
+
+        两种索引策略:
+            HNSW (默认):  基于图的近似最近邻搜索，精度高但内存占用大。
+                          适合百万级以下的数据，构建快、查询快。
+            IVF-PQ:       先聚类粗筛（IVF）再做乘积量化（PQ）压缩。
+                          内存占用约为 HNSW 的 1/10，适合千万级以上数据。
+                          代价是精度略低，需要先训练聚类中心。
 
         参数:
-            dimension: 向量维度。
-            use_ivf: 是否启用 IVF-PQ。
-            n_total: 预估样本规模。
-        返回:
-            FAISS 索引实例。
+            dimension: 向量维度（默认 768，与 bert-base-chinese 对齐）。
+            use_ivf:   是否强制使用 IVF-PQ 压缩索引。
+            n_total:   预估数据规模（用于计算 IVF 聚类数）。
         """
         if use_ivf and n_total > 10000:
-            # IVF-PQ 压缩索引：使用倒排列表(IVF)和乘法量化(PQ)
-            nlist = int(4 * (n_total ** 0.5))  # 聚类中心数量
-            m = 8  # 将 768 维降到 8 个子向量进行量化
+            # --- IVF-PQ 压缩索引 ---
+            # nlist: 聚类中心数，经验公式 4 * sqrt(n)
+            nlist = int(4 * (n_total ** 0.5))
+            # m: 子向量个数，768维分成 8 个 96 维子向量分别量化
+            m = 8
+            # 粗量化器：用 FlatIP（精确内积搜索）作为第一阶段粗筛
             quantizer = faiss.IndexFlatIP(dimension)
-            # 使用内积度量，8比特量化，每个子向量量化为256个中心
+            # 每个子向量用 8 bit 编码（256 个聚类中心）
             index = faiss.IndexIVFPQ(quantizer, dimension, nlist, m, 8, faiss.METRIC_INNER_PRODUCT)
-            index.nprobe = 10 # 检索时搜索的聚类数量，平衡速度与精度
+            # nprobe: 检索时探测的聚类数，10 是速度与精度的常用平衡点
+            index.nprobe = 10
             return index
-        # 默认使用高性能但占内存的 HNSW
+        # --- HNSW 图索引（默认）---
+        # 32: 每个节点连接数，越大精度越高但构建越慢
         return faiss.IndexHNSWFlat(dimension, 32, faiss.METRIC_INNER_PRODUCT)
 
     @staticmethod
@@ -300,8 +348,22 @@ class VectorDB:
         db.response_index = cls._read_index_safe(files["response_index"])
         return db
 
+# ============================================================
+# 语料编码入库模块 (CorpusEncoder)
+# 串联 "读取语料 → 双塔编码 → 写入双索引" 全流程
+# ============================================================
+
+
 class CorpusEncoder:
-    """写入入口模块：读取语料 -> 编码 -> 写入双索引。"""
+    """
+    语料编码入库主流程。
+
+    流程:
+        1. 分块流式读取 CSV 语料（避免一次性加载撑爆内存）
+        2. 逐块用双塔模型编码为 768 维向量
+        3. 写入 FAISS 双索引（query_index + response_index）
+        4. 每 N 个分块保存一次检查点（断点续跑，防止中断后从头开始）
+    """
 
     def __init__(self, model_engine, data_dir: str):
         """初始化语料编码器。
@@ -396,7 +458,7 @@ class CorpusEncoder:
                 raise ValueError(f"检查点 n_samples 不一致: {state_n_samples} != {curr_n_samples}")
 
             processed_rows = int(state.get("processed_rows", 0))
-            db = VectorDB.load(faiss_db_path, dimension=768)
+            db = VectorDB.load(faiss_db_path, dimension=DEFAULT_VECTOR_DIM)
 
             q_total = int(db.query_index.ntotal)  # type: ignore
             r_total = int(db.response_index.ntotal)  # type: ignore
@@ -408,7 +470,7 @@ class CorpusEncoder:
             print(f"断点续跑就绪，已完成 {processed_rows}/{total_rows} 条。")
         else:
             print("未发现有效检查点，开始全新编码任务。")
-            db = VectorDB(dimension=768)
+            db = VectorDB(dimension=DEFAULT_VECTOR_DIM)
 
         if db is None:
             raise RuntimeError("向量数据库初始化失败。")
