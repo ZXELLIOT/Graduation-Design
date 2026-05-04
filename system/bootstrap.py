@@ -19,7 +19,6 @@ from system.config import (
     DB_DATA_DIR,
     DB_CSV_PATH,
     DB_QUERY_INDEX_FILE,
-    DB_RESPONSE_INDEX_FILE,
     DB_PREFIX,
     SIMILARITY_THRESHOLD,
     RERANK_WEIGHTS,
@@ -65,7 +64,7 @@ def _read_faiss_index_safely(index_path: str) -> Any:
 
 def check_kb_exists() -> Tuple[bool, List[str]]:
     """检查数据库运行依赖文件是否存在。"""
-    required_files = [DB_QUERY_INDEX_FILE, DB_RESPONSE_INDEX_FILE, DB_CSV_PATH]
+    required_files = [DB_QUERY_INDEX_FILE, DB_CSV_PATH]
     missing_files = [f for f in required_files if not os.path.exists(f)]
     return len(missing_files) == 0, missing_files
 
@@ -83,11 +82,10 @@ def validate_database() -> Tuple[bool, str]:
         pd.read_csv(DB_CSV_PATH, usecols=["query", "response"], nrows=1)
 
         # FAISS 索引: 只做快速可读性检查，不做完整反序列化。
-        for index_path in (DB_QUERY_INDEX_FILE, DB_RESPONSE_INDEX_FILE):
-            with open(index_path, "rb") as f:
-                head = f.read(16)
-                if not head:
-                    raise ValueError(f"索引文件为空: {index_path}")
+        with open(DB_QUERY_INDEX_FILE, "rb") as f:
+            head = f.read(16)
+            if not head:
+                raise ValueError(f"索引文件为空: {DB_QUERY_INDEX_FILE}")
     except Exception as e:
         return False, str(e)
     return True, "数据库文件可读。"
@@ -99,14 +97,10 @@ def load_database_columns(prefix: str) -> Tuple[Any, Any, TextStore]:
     """加载数据库索引与文本偏移索引（内存友好模式）。"""
     db_base_path = os.path.join(DB_DATA_DIR, f"{prefix}_faiss_db")
     query_index_path = db_base_path + "_query.index"
-    response_index_path = db_base_path + "_response.index"
 
     query_index = _read_faiss_index_safely(query_index_path)
-    try:
-        response_index = _read_faiss_index_safely(response_index_path)
-    except MemoryError:
-        print("[WARN] response_index 加载内存不足，已退化为复用 query_index。")
-        response_index = query_index
+    # response_index 不加载：query 和 response 一一对应，重排时纯用 query 向量相似度
+    response_index = None
 
     text_store = TextStore(DB_CSV_PATH)
     return query_index, response_index, text_store

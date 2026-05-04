@@ -357,30 +357,34 @@ class DialogComparator:
             单靠问问相似度可能找错回复（问句相似但答句不匹配），
             加入问答相似度作为修正项能更准确地衡量"这个回复是否合适"。
         """
-        if self.query_index is None or self.response_index is None:
+        if self.query_index is None:
             return []
 
         valid_ids: List[int] = [int(idx) for idx in candidate_ids if 0 <= int(idx) < self.doc_count]
         if not valid_ids:
             return []
 
-        cand_query_vecs: List[np.ndarray] = []
-        cand_resp_vecs: List[np.ndarray] = []
-        for idx in valid_ids:
-            cand_query_vecs.append(np.asarray(self.query_index.reconstruct(idx), dtype=np.float32))  # type: ignore
-            cand_resp_vecs.append(np.asarray(self.response_index.reconstruct(idx), dtype=np.float32))  # type: ignore
-
+        # 重构候选问句向量
+        cand_query_vecs = [np.asarray(self.query_index.reconstruct(idx), dtype=np.float32) for idx in valid_ids]
         query_mat = np.vstack(cand_query_vecs)
-        resp_mat = np.vstack(cand_resp_vecs)
+
+        # 有 response_index 时做加权融合，否则纯用问句相似度
+        has_response = self.response_index is not None
+        if has_response:
+            cand_resp_vecs = [np.asarray(self.response_index.reconstruct(idx), dtype=np.float32) for idx in valid_ids]
+            resp_mat = np.vstack(cand_resp_vecs)
 
         q_vec = user_query_np.astype(np.float32, copy=False)
         q_norm = float(np.linalg.norm(q_vec)) + self._eps
         query_norms = np.linalg.norm(query_mat, axis=1) + self._eps
-        resp_norms = np.linalg.norm(resp_mat, axis=1) + self._eps
-
         query_sims = (query_mat @ q_vec) / (query_norms * q_norm)
-        reply_sims = (resp_mat @ q_vec) / (resp_norms * q_norm)
-        final_scores = self.rerank_weights[0] * query_sims + self.rerank_weights[1] * reply_sims
+
+        if has_response:
+            resp_norms = np.linalg.norm(resp_mat, axis=1) + self._eps
+            reply_sims = (resp_mat @ q_vec) / (resp_norms * q_norm)
+            final_scores = self.rerank_weights[0] * query_sims + self.rerank_weights[1] * reply_sims
+        else:
+            final_scores = query_sims
 
         order = np.argsort(-final_scores)
         top_order = order[:top_k_safe]
