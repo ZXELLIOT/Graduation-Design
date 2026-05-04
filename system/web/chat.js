@@ -143,32 +143,25 @@ clearCtxBtn.addEventListener("click", async () => {
 });
 
 // ============================================================
-// 初始化：预热系统
+// 初始化：轮询系统就绪状态
 // ============================================================
 
 let systemReady = false;
-addMessage("系统正在加载模型和知识库，请稍候...", "bot");
-setStatus("初始化中，首次加载约需 10-30 秒...");
+addMessage("系统正在后台加载模型和知识库，预计 10-30 秒...", "bot");
+setStatus("等待系统就绪...");
 
-async function warmup() {
+async function checkReady() {
   try {
-    const res = await fetch("/api/meta");
-    if (res.ok) {
+    const res = await fetch("/api/status");
+    const data = await res.json();
+    if (data.ready) {
       systemReady = true;
-      removeLoading();
-      // 清除预热消息
       chatWindow.innerHTML = "";
       addMessage("你好！我是 SimCSE 检索式对话机器人，可以直接开始聊天。", "bot");
       setStatus("就绪");
+      return;
     }
-  } catch (e) {
-    // 继续重试
-    setTimeout(warmup, 3000);
-  }
+  } catch (e) {}
+  setTimeout(checkReady, 1500);
 }
-
-// 先发一个请求触发首次初始化（bootstrap 是懒加载单例）
-fetch("/api/meta").then(r => {
-  if (r.ok) { warmup(); }
-  else { setTimeout(warmup, 2000); }
-}).catch(() => setTimeout(warmup, 2000));
+checkReady();

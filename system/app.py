@@ -13,6 +13,7 @@ system/app.py
 import os
 import sys
 import time
+import threading
 import psutil
 import uvicorn
 from pathlib import Path
@@ -120,6 +121,15 @@ def admin_login(body: Dict[str, str]) -> Dict[str, Any]:
     return {"ok": False, "detail": "密码错误"}
 
 
+_system_ready = False
+
+
+@api_app.get("/api/status")
+def system_status() -> Dict[str, Any]:
+    """返回系统就绪状态。"""
+    return {"ready": _system_ready}
+
+
 @api_app.post("/api/context/clear")
 def clear_context() -> Dict[str, Any]:
     """清除上下文记忆。"""
@@ -141,6 +151,8 @@ def meta() -> Dict[str, str]:
 @api_app.get("/api/settings/comparator")
 def get_comparator_settings() -> Dict[str, Any]:
     """读取当前比较器全部可调参数。"""
+    if not _system_ready:
+        raise HTTPException(status_code=503, detail="系统正在初始化")
     comparator = get_dialog_comparator()
     return comparator_settings_payload(comparator)
 
@@ -156,6 +168,9 @@ def set_comparator_settings(req: ComparatorSettingsRequest) -> Dict[str, Any]:
 @api_app.post("/api/chat", response_model=ChatResponse)
 def chat(req: ChatRequest) -> ChatResponse:
     """聊天接口。"""
+    if not _system_ready:
+        raise HTTPException(status_code=503, detail="系统正在初始化，请稍候...")
+
     conversation_id = req.conversation_id or str(uuid4())
 
     # 推理主链路：输入 → 检索/增强 → 结构化结果。
@@ -236,15 +251,23 @@ def api_perf() -> Dict[str, Any]:
     }
 
 
-if __name__ == "__main__":
+def _load_system_background():
+    """后台加载模型和知识库，完成后设置就绪标志。"""
+    global _system_ready
     try:
-        print("=" * 50)
-        print("  SimCSE 检索式对话系统")
-        print("  本地服务: http://127.0.0.1:7860")
-        print("=" * 50)
-        # 启动前预热：确保首个请求不承担完整初始化延迟。
+        print("[系统] 正在后台加载模型和数据库...")
         get_dialog_comparator()
-        print("\n系统就绪，正在启动 Web 服务...\n")
-        uvicorn.run(api_app, host="127.0.0.1", port=7860)
+        _system_ready = True
+        print("[系统] 加载完成，服务就绪。")
     except Exception as e:
-        print(f"启动失败: {e}")
+        print(f"[系统] 加载失败: {e}")
+
+
+if __name__ == "__main__":
+    print("=" * 50)
+    print("  SimCSE 检索式对话系统")
+    print("  本地服务: http://127.0.0.1:7860")
+    print("=" * 50)
+    # 先启动 Web 服务，再后台加载模型（前端轮询 /api/status 获取进度）
+    threading.Thread(target=_load_system_background, daemon=True).start()
+    uvicorn.run(api_app, host="127.0.0.1", port=7860)
