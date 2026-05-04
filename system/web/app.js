@@ -1,3 +1,14 @@
+/**
+ * sim-检索式对话机器人 前端脚本
+ *
+ * 两大功能模块:
+ * 一、基础对话界面 — 发送消息、显示回复、多轮历史管理
+ * 二、后台管理监控面板 — 调参面板、实时性能、日志查看
+ */
+
+// ============================================================
+// DOM 元素引用
+// ============================================================
 const chatWindow = document.getElementById("chat-window");
 const chatForm = document.getElementById("chat-form");
 const chatInput = document.getElementById("chat-input");
@@ -37,6 +48,11 @@ const perfSeries = {
 };
 const PERF_CAP = 40;
 
+// ============================================================
+// 工具函数
+// ============================================================
+
+/** HTML 转义，防止 XSS 注入 */
 function escapeHtml(text) {
   return String(text || "")
     .replaceAll("&", "&amp;")
@@ -93,6 +109,12 @@ function formatAiFallbackReason(reason) {
   return map[key] || key;
 }
 
+// ============================================================
+// 二、后台管理监控面板
+// 包含: 调参面板、日志查看、实时性能监控折线图
+// ============================================================
+
+/** 将单条日志记录渲染为 HTML */
 function renderLogItem(item) {
   const ts = escapeHtml(item.timestamp || "");
   const resultType = formatResultType(item.result_type);
@@ -177,6 +199,12 @@ function renderLogItem(item) {
   `;
 }
 
+// ============================================================
+// 一、基础对话界面
+// 包含: 消息渲染、发送消息、对话历史管理
+// ============================================================
+
+/** 在聊天窗口中添加一条消息气泡 */
 function addMessage(text, role) {
   const div = document.createElement("div");
   div.className = `msg ${role === "user" ? "msg-user" : "msg-bot"}`;
@@ -280,6 +308,11 @@ function _fmt(n, digits = 2) {
   return v.toFixed(digits);
 }
 
+/**
+ * 绘制折线图（Canvas 2D）。
+ * 用于性能监控面板的 CPU/内存和会话时延趋势图。
+ * 支持多系列叠加，自动计算 Y 轴范围。
+ */
 function drawLineChart(canvas, labels, seriesList) {
   if (!canvas || !canvas.getContext) {
     return;
@@ -426,6 +459,10 @@ function setSettingsToForm(data) {
   aiEnhancedInput.checked = Boolean(data.ai_enhanced);
 }
 
+/**
+ * 从前端表单读取调参面板的所有参数值并校验。
+ * 校验规则与后端 comparator_settings.py 保持一致。
+ */
 function readSettingsFromForm() {
   const payload = {
     similarity_threshold: Number(similarityThresholdInput.value),
