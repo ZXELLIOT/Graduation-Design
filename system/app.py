@@ -237,7 +237,7 @@ def api_perf() -> Dict[str, Any]:
 
 
 if __name__ == "__main__":
-    # 先加载模型和数据，再启动 Web（控制台显示进度条）
+    # 先加载模型和数据，再启动 Web
     get_dialog_comparator()
     print(f"\nWeb 服务: http://127.0.0.1:7860\n")
     uvicorn.run(api_app, host="127.0.0.1", port=7860)
