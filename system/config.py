@@ -97,3 +97,8 @@ AI_ENHANCE_API_KEY = os.getenv("ARK_API_KEY", "")
 
 # 请求超时时间（秒）
 AI_ENHANCE_TIMEOUT_SEC = float(os.getenv("ARK_TIMEOUT_SEC", "20"))
+
+# ============================================================
+# 后台管理密码（修改此值或在 .env 中设置 ADMIN_PASSWORD）
+# ============================================================
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "simcse2024")

@@ -3,112 +3,56 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>sim-检索式对话机器人</title>
+  <title>SimCSE 检索式对话系统</title>
   <link rel="stylesheet" href="/static/style.css" />
+  <style>
+    .landing { max-width: 720px; margin: 80px auto 0; text-align: center; padding: 0 20px; }
+    .landing h1 { font-size: 2rem; margin-bottom: 8px; }
+    .landing .subtitle { color: #5a6674; font-size: 1.05rem; margin-bottom: 40px; }
+    .feature-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 40px; text-align: left; }
+    .feature-card { background: #fffdf8; border: 1px solid #f0d9b5; border-radius: 12px; padding: 18px; }
+    .feature-card h3 { margin: 0 0 6px; font-size: 1rem; }
+    .feature-card p { margin: 0; color: #5a6674; font-size: 0.9rem; line-height: 1.5; }
+    .entry-buttons { display: flex; gap: 24px; justify-content: center; flex-wrap: wrap; }
+    .entry-btn { display: block; width: 220px; padding: 24px 0; border-radius: 16px; text-decoration: none; color: #fff; font-size: 1.1rem; font-weight: 600; transition: transform 0.2s, box-shadow 0.2s; }
+    .entry-btn:hover { transform: translateY(-3px); box-shadow: 0 12px 28px rgba(0,0,0,0.15); }
+    .entry-btn.chat { background: linear-gradient(135deg, #1b7f79 0%, #2aa198 100%); }
+    .entry-btn.admin { background: linear-gradient(135deg, #f08a4b 0%, #d4733a 100%); }
+    .entry-btn small { display: block; font-weight: 400; font-size: 0.8rem; margin-top: 4px; opacity: 0.85; }
+  </style>
 </head>
 <body>
   <div class="bg-glow bg-glow-left"></div>
   <div class="bg-glow bg-glow-right"></div>
 
-  <header class="topbar">
-    <div class="brand">
-      <div class="logo" aria-hidden="true">sim</div>
-      <div>
-        <h1>sim-检索式对话机器人</h1>
-        <p>本地检索对话系统</p>
+  <main class="landing">
+    <div class="logo" aria-hidden="true" style="margin:0 auto 20px; width:72px; height:72px; font-size:1.3rem;">sim</div>
+    <h1>SimCSE 检索式对话系统</h1>
+    <p class="subtitle">基于对比学习的双塔语义匹配 · FAISS 向量检索 · AI 增强生成</p>
+
+    <div class="feature-grid">
+      <div class="feature-card">
+        <h3>双塔语义匹配</h3>
+        <p>SimCSE 两阶段微调的 Query/Response 双编码器，精准捕捉对话语义</p>
+      </div>
+      <div class="feature-card">
+        <h3>高性能检索</h3>
+        <p>FAISS HNSW 图索引粗召回 + 问问/问答加权重排，百万级语料毫秒响应</p>
+      </div>
+      <div class="feature-card">
+        <h3>上下文感知</h3>
+        <p>关键词触发 + 短文本检测，自动拼接多轮历史，理解对话上下文</p>
+      </div>
+      <div class="feature-card">
+        <h3>AI 增强生成</h3>
+        <p>可选大模型融合检索候选，生成更自然流畅的回复</p>
       </div>
     </div>
-  </header>
 
-  <main class="layout">
-    <!-- ===== 一、基础对话界面 ===== -->
-    <section class="chat card">
-      <div class="chat-header">
-        <div class="chat-header-row">
-          <h2>开始对话</h2>
-          <button id="clear-chat" type="button">清除对话</button>
-        </div>
-        <p class="subtitle">支持回车发送，Shift+Enter 换行</p>
-      </div>
-
-      <div id="chat-window" class="chat-window"></div>
-      <form id="chat-form" class="composer">
-        <textarea id="chat-input" rows="2" placeholder="请输入内容，和 sim 聊聊吧..." required></textarea>
-        <button id="send-btn" type="submit">发送</button>
-      </form>
-      <p id="status" class="status">服务就绪</p>
-
-      <section class="perf-panel" aria-label="实时性能监控">
-        <div class="perf-head">
-          <h3>实时性能</h3>
-          <span id="perf-last-updated">--:--:--</span>
-        </div>
-        <div class="perf-kpis">
-          <span id="perf-cpu">CPU --%</span>
-          <span id="perf-mem">内存 --%</span>
-          <span id="perf-chat-avg">会话均时延 -- ms</span>
-          <span id="perf-chat-p95">会话P95 -- ms</span>
-        </div>
-        <div class="perf-grid">
-          <article class="perf-card">
-            <div class="perf-title">设备负载(CPU/内存)</div>
-            <canvas id="perf-device-chart" height="150"></canvas>
-          </article>
-          <article class="perf-card">
-            <div class="perf-title">系统对话耗时</div>
-            <canvas id="perf-chat-chart" height="150"></canvas>
-          </article>
-        </div>
-      </section>
-    </section>
-
-    <!-- ===== 二、后台管理监控面板 ===== -->
-    <section class="logs card">
-      <div class="logs-head">
-        <h2>最近日志</h2>
-        <div>
-          <button id="refresh-logs" type="button">刷新</button>
-          <button id="clear-logs" type="button">清除日志</button>
-        </div>
-      </div>
-
-      <div class="settings-box">
-        <div class="settings-title">调参面板</div>
-        <div class="setting-grid">
-          <label for="similarity-threshold">命中阈值</label>
-          <input id="similarity-threshold" type="number" min="0" max="1" step="0.01" value="0.50" />
-
-          <label for="rerank-query-weight">问问权重</label>
-          <input id="rerank-query-weight" type="number" min="0" max="2" step="0.01" value="0.75" />
-
-          <label for="rerank-reply-weight">问答权重</label>
-          <input id="rerank-reply-weight" type="number" min="0" max="2" step="0.01" value="0.25" />
-
-          <label for="context-max-turns">上下文轮数</label>
-          <input id="context-max-turns" type="number" min="1" max="10" step="1" value="3" />
-
-          <label for="context-matching-enabled">上下文匹配</label>
-          <input id="context-matching-enabled" type="checkbox" checked />
-
-          <label for="coarse-recall-count">粗召回数量</label>
-          <input id="coarse-recall-count" type="number" min="0" max="10000" step="1" value="500" />
-
-          <label for="rerank-top-k">精排数量</label>
-          <input id="rerank-top-k" type="number" min="1" max="200" step="1" value="5" />
-
-          <label for="ai-enhanced">AI增强</label>
-          <input id="ai-enhanced" type="checkbox" />
-        </div>
-        <div class="settings-actions">
-          <button id="reload-settings" type="button">读取当前</button>
-          <button id="apply-settings" type="button">应用参数</button>
-        </div>
-      </div>
-
-      <div id="logs-panel" class="logs-panel"></div>
-    </section>
+    <div class="entry-buttons">
+      <a href="/chat" class="entry-btn chat">开始对话<small>普通用户入口</small></a>
+      <a href="/admin" class="entry-btn admin">后台管理<small>系统管理员入口</small></a>
+    </div>
   </main>
-
-  <script src="/static/app.js"></script>
 </body>
 </html>

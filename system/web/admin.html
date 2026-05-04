@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>后台管理 - SimCSE</title>
+  <link rel="stylesheet" href="/static/style.css" />
+  <style>
+    .admin-page { max-width: 960px; margin: 0 auto; padding: 0 16px 24px; }
+    .topbar { display: flex; align-items: center; justify-content: space-between; padding: 12px 0; }
+    .topbar .brand { display: flex; align-items: center; gap: 10px; text-decoration: none; color: inherit; }
+    .topbar .logo-sm { width: 36px; height: 36px; border-radius: 10px; background: linear-gradient(140deg, #f08a4b, #d4733a); color: #fff; display: grid; place-items: center; font-weight: 700; font-size: 0.75rem; }
+    .topbar h1 { font-size: 1.05rem; margin: 0; }
+    .login-overlay { position: fixed; inset: 0; background: #fffdf8; display: flex; align-items: center; justify-content: center; z-index: 100; }
+    .login-box { text-align: center; }
+    .login-box input { padding: 10px 14px; border: 1px solid #e8d6b4; border-radius: 10px; font-size: 1rem; width: 220px; margin-right: 8px; }
+    .login-box button { padding: 10px 20px; }
+    .login-err { color: #d03838; font-size: 0.85rem; margin-top: 8px; }
+    .hidden { display: none !important; }
+    .panel { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    .card { background: #fffdf8; border: 1px solid #f0d9b5; border-radius: 14px; padding: 14px; }
+    .card h3 { margin: 0 0 10px; font-size: 0.95rem; }
+    .perf-kpis { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 8px; }
+    .perf-kpis span { font-size: 0.78rem; border: 1px solid #efd7b0; border-radius: 6px; padding: 4px 8px; background: #fffdf7; }
+    .perf-card canvas { width: 100%; height: 120px; }
+    .setting-grid { display: grid; grid-template-columns: auto 1fr; gap: 5px; align-items: center; font-size: 0.83rem; }
+    .setting-grid label { color: #4d5a68; white-space: nowrap; }
+    .setting-grid input, .setting-grid select { width: 100%; border: 1px solid #e8d6b4; border-radius: 6px; padding: 4px 6px; font-size: 0.83rem; background: #fff; }
+    .setting-grid input[type="checkbox"] { width: 16px; height: 16px; justify-self: start; }
+    .setting-actions { margin-top: 8px; display: flex; gap: 8px; }
+    .setting-section { margin-bottom: 10px; }
+    .setting-section h4 { font-size: 0.85rem; margin: 8px 0 4px; color: #31404f; border-bottom: 1px solid #f0d9b5; padding-bottom: 2px; }
+    .logs-panel { max-height: 260px; overflow: auto; font-size: 0.78rem; }
+    .log-item { border: 1px solid #f0dfc3; border-radius: 8px; padding: 5px 8px; margin-bottom: 4px; }
+    .log-item .log-meta { color: #6a7683; font-size: 0.72rem; }
+    @media (max-width: 768px) { .panel { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <div id="login-overlay" class="login-overlay">
+    <div class="login-box">
+      <h2>后台管理</h2>
+      <div>
+        <input type="password" id="admin-pwd" placeholder="请输入管理密码" />
+        <button id="login-btn">登录</button>
+      </div>
+      <p id="login-err" class="login-err"></p>
+    </div>
+  </div>
+
+  <div id="admin-content" class="admin-page hidden">
+    <header class="topbar">
+      <a href="/" class="brand">
+        <div class="logo-sm">adm</div>
+        <h1>后台管理</h1>
+      </a>
+      <div style="display:flex;gap:8px;">
+        <button id="refresh-logs">刷新日志</button>
+        <button id="clear-logs">清空日志</button>
+        <a href="/" style="font-size:0.8rem;color:#5a6674;text-decoration:none;padding:4px 8px;">← 返回</a>
+      </div>
+    </header>
+
+    <div class="panel">
+      <!-- 性能监控 -->
+      <div class="card" style="grid-column:1/-1;">
+        <h3>实时性能 <span id="perf-time" style="font-weight:400;font-size:0.78rem;color:#607080;">--:--:--</span></h3>
+        <div class="perf-kpis">
+          <span id="perf-cpu">CPU --%</span>
+          <span id="perf-mem">内存 --%</span>
+          <span id="perf-chat-avg">均时延 -- ms</span>
+          <span id="perf-chat-p95">P95 -- ms</span>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+          <div class="perf-card"><canvas id="perf-device-chart"></canvas></div>
+          <div class="perf-card"><canvas id="perf-chat-chart"></canvas></div>
+        </div>
+      </div>
+
+      <!-- 检索参数 -->
+      <div class="card">
+        <h3>检索参数</h3>
+        <div class="setting-grid">
+          <label>命中阈值</label><input id="similarity-threshold" type="number" min="0" max="1" step="0.01" />
+          <label>问问权重</label><input id="rerank-query-weight" type="number" min="0" max="2" step="0.01" />
+          <label>问答权重</label><input id="rerank-reply-weight" type="number" min="0" max="2" step="0.01" />
+          <label>粗召回数量</label><input id="coarse-recall-count" type="number" min="0" max="10000" step="1" />
+          <label>精排 Top-K</label><input id="rerank-top-k" type="number" min="1" max="200" step="1" />
+        </div>
+      </div>
+
+      <!-- 上下文参数 -->
+      <div class="card">
+        <h3>上下文参数</h3>
+        <div class="setting-grid">
+          <label>启用上下文</label><input id="context-matching-enabled" type="checkbox" />
+          <label>历史轮数</label><input id="context-max-turns" type="number" min="1" max="10" step="1" />
+          <label>最大文本长度</label><input id="max-text-len" type="number" min="8" max="256" step="1" />
+        </div>
+      </div>
+
+      <!-- AI增强参数 -->
+      <div class="card">
+        <h3>AI 增强参数</h3>
+        <div class="setting-grid">
+          <label>启用 AI 增强</label><input id="ai-enhanced" type="checkbox" />
+          <label>候选数量</label><input id="ai-topk" type="number" min="1" max="20" step="1" />
+          <label>超时(秒)</label><input id="ai-timeout" type="number" min="1" max="120" step="1" />
+          <label>模型名称</label><input id="ai-model-name" type="text" />
+          <label>API 地址</label><input id="ai-responses-url" type="text" style="font-size:0.75rem;" />
+          <label>API Key 状态</label><span id="ai-key-status" style="font-size:0.8rem;"></span>
+        </div>
+      </div>
+
+      <!-- 日志 -->
+      <div class="card" style="grid-column:1/-1;">
+        <h3>对话日志</h3>
+        <div id="logs-panel" class="logs-panel">暂无日志</div>
+      </div>
+    </div>
+
+    <!-- 全局操作 -->
+    <div style="margin-top:14px;display:flex;gap:10px;justify-content:center;">
+      <button id="reload-settings">读取当前配置</button>
+      <button id="apply-settings">应用全部参数</button>
+    </div>
+    <p id="settings-status" style="text-align:center;font-size:0.82rem;color:#1f9d55;margin-top:6px;"></p>
+  </div>
+
+  <script src="/static/admin.js"></script>
+</body>
+</html>

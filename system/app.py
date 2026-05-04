@@ -32,6 +32,7 @@ from system.bootstrap import get_dialog_comparator
 from system.chat_logger import LOG_FILE, append_chat_log, clear_logs, latest_logs
 from system.chat_service import infer
 from system.comparator_settings import apply_comparator_settings, comparator_settings_payload
+from system.config import ADMIN_PASSWORD
 
 WEB_DIR = Path(CURRENT_DIR) / "web"
 SERVICE_START_TS = time.time()
@@ -92,6 +93,39 @@ def home() -> FileResponse:
     if not index_file.exists():
         raise HTTPException(status_code=404, detail=f"前端首页不存在: {index_file}")
     return FileResponse(str(index_file))
+
+
+@api_app.get("/chat")
+def chat_page() -> FileResponse:
+    """对话页面。"""
+    f = WEB_DIR / "chat.html"
+    if not f.exists(): raise HTTPException(404)
+    return FileResponse(str(f))
+
+
+@api_app.get("/admin")
+def admin_page() -> FileResponse:
+    """后台管理页面。"""
+    f = WEB_DIR / "admin.html"
+    if not f.exists(): raise HTTPException(404)
+    return FileResponse(str(f))
+
+
+@api_app.post("/api/admin/login")
+def admin_login(body: Dict[str, str]) -> Dict[str, Any]:
+    """后台管理密码验证。"""
+    pwd = body.get("password", "")
+    if pwd == ADMIN_PASSWORD:
+        return {"ok": True, "token": "admin"}
+    return {"ok": False, "detail": "密码错误"}
+
+
+@api_app.post("/api/context/clear")
+def clear_context() -> Dict[str, Any]:
+    """清除上下文记忆。"""
+    comparator = get_dialog_comparator()
+    n = comparator.clear_context_memory()
+    return {"ok": True, "cleared": n}
 
 
 @api_app.get("/api/meta")

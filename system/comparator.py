@@ -112,18 +112,14 @@ class DialogComparator:
         self.context_matching_enabled = bool(context_matching_enabled)
         # 上下文缓存固定保留最近 2 轮（用户+系统）。
         self.context_cache_turns = 2
-        # 仅当输入包含这些“指向上文”的词语时才触发上下文匹配
-        self.context_trigger_pattern = re.compile(
-            r"(你|它|这个|那款|哪里|怎么|多少|那个|这件|那件|这里|那里|上文|前文|后文|上下文|"
-            r"上面|前面|上个|上一|上次|刚才|之前|继续|接着|"
-            r"\bthis\b|\bthat\b|\bit\b|\bwhere\b|\bhow\b|\bmuch\b|\bmore\b|\bagain\b)",
-            re.IGNORECASE,
-        )
-        # 明确切换话题时，禁止上下文拼接
-        self.context_negative_pattern = re.compile(
-            r"(另外|顺便|换个|新问题|题外话|另一个问题|by\s+the\s+way|new\s+question|another\s+topic)",
-            re.IGNORECASE,
-        )
+        # 上下文记忆（独立于对话历史，可通过 /api/context/clear 归零）
+        self.context_memory: List[str] = []
+
+    def clear_context_memory(self) -> int:
+        """清除上下文记忆，返回清除的条数。"""
+        n = len(self.context_memory)
+        self.context_memory.clear()
+        return n
 
         # 轻量查询向量缓存：减少短时间内重复文本的重复编码开销。
         self._query_vec_cache: OrderedDict[str, np.ndarray] = OrderedDict()
@@ -189,62 +185,6 @@ class DialogComparator:
             "csv_idx": int(idx),
         }
 
-    @staticmethod
-    def _tokenize_for_overlap(text: str) -> set:
-        """提取用于词面重叠计算的中英文词元。"""
-        if not text:
-            return set()
-        tokens = re.findall(r"[\u4e00-\u9fff]+|[a-zA-Z0-9]+", text.lower())
-        return {t for t in tokens if t}
-
-    def _lexical_overlap_ratio(self, current_text: str, recent_contexts: List[str]) -> float:
-        """计算当前输入与最近上下文的词面重叠比例（Jaccard）。"""
-        if not current_text or not recent_contexts:
-            return 0.0
-
-        current_tokens = self._tokenize_for_overlap(current_text)
-        if not current_tokens:
-            return 0.0
-
-        context_tokens = set()
-        for text in recent_contexts:
-            context_tokens |= self._tokenize_for_overlap(text)
-
-        if not context_tokens:
-            return 0.0
-
-        inter = len(current_tokens & context_tokens)
-        union = len(current_tokens | context_tokens)
-        if union == 0:
-            return 0.0
-        return inter / union
-
-    def _semantic_recent_similarity(self, current_text: str, recent_contexts: List[str], early_stop: float = 1.0) -> float:
-        """计算当前输入与最近历史的最高语义相似度。"""
-        if not current_text or not recent_contexts:
-            return 0.0
-
-        try:
-            current_np = self._encode_query_cached(current_text)
-            if current_np.size == 0:
-                return 0.0
-
-            best = 0.0
-            for text in reversed(recent_contexts):
-                if not text:
-                    continue
-                hist_np = self._encode_query_cached(text)
-                if hist_np.size == 0:
-                    continue
-                sim = self._cosine_sim(current_np, hist_np)
-                if sim > best:
-                    best = sim
-                if best >= early_stop:
-                    break
-            return float(best)
-        except Exception:
-            # 语义计算失败时退化为词面规则，不阻塞主流程
-            return 0.0
 
     @staticmethod
     def _normalize_input(text: str) -> str:
@@ -256,31 +196,6 @@ class DialogComparator:
         if not text:
             return ""
         return text[: self.max_text_len]
-
-    def _extract_recent_context(self, history: Optional[List[Any]]) -> List[str]:
-        """缓存并提取最近 2 轮用户输入上下文。"""
-        if not history:
-            self._recent_dialog_cache = []
-            return []
-
-        rounds: List[str] = []
-        for turn in history:
-            if isinstance(turn, (list, tuple)) and len(turn) >= 2:
-                user_part = turn[0]
-                if isinstance(user_part, str):
-                    user_clean = self._normalize_input(user_part)
-                    if user_clean and not self._is_invalid_after_clean(user_clean):
-                        rounds.append(self._truncate_text(user_clean))
-            elif isinstance(turn, dict):
-                # 若是 message 列表格式(dict)，该函数不做复杂配对，避免引入歧义。
-                continue
-
-        if not rounds:
-            self._recent_dialog_cache = []
-            return []
-
-        self._recent_dialog_cache: List[str] = rounds[-self.context_cache_turns :]
-        return list(self._recent_dialog_cache)
 
     def _merge_context_with_budget(self, current: str, recent_contexts: List[str]) -> str:
         """在长度预算内拼接上下文，并保证当前问题完整保留。"""
@@ -318,84 +233,46 @@ class DialogComparator:
         selected.reverse()
         return "".join(selected + [current_text]).strip()
 
-    def _evaluate_context_need(self, current_text: str, recent_contexts: Optional[List[str]] = None) -> TraceMeta:
-        """按规则判断是否需要上下文：短文本或命中关键词才启用。"""
-        current = self._truncate_text(self._normalize_input(current_text))
-        contexts = recent_contexts or []
-
+    def build_contextual_query_with_meta(self, current_text: str, history: Optional[List[Any]]) -> Tuple[str, TraceMeta]:
+        """构造上下文查询：开启时拼接最近 N 条用户输入，关闭时仅返回当前输入。"""
+        current = self._truncate_text(current_text)
         meta: TraceMeta = {
-            "enabled": False,
-            "reason": "empty_input",
-            "has_trigger": False,
-            "is_short_query": False,
-            "negative_hit": False,
-            "history_count": int(len(contexts)),
-            "current_text_len": int(len(current)),
-            "recent_contexts": list(contexts),
+            "enabled": False, "reason": "disabled_by_config",
+            "history_count": 0, "current_text_len": int(len(current)),
         }
 
-        if not current:
-            return meta
-
-        negative_hit = False
-        has_trigger = bool(self.context_trigger_pattern.search(current))
-        is_short_query = len(current) <= 4
-
-        meta.update(
-            {
-                "has_trigger": bool(has_trigger),
-                "is_short_query": bool(is_short_query),
-                "negative_hit": bool(negative_hit),
-            }
-        )
-
-        if not contexts:
-            meta["reason"] = "no_history"
-            return meta
-
-        if is_short_query:
-            meta["enabled"] = True
-            meta["reason"] = "short_query"
-            return meta
-
-        # 关键词即触发：只要命中“指向上文”关键词并且存在历史，直接启用上下文。
-        if has_trigger:
-            meta["enabled"] = True
-            meta["reason"] = "trigger_keyword"
-            return meta
-
-        meta["reason"] = "no_context_needed"
-        return meta
-
-    def build_contextual_query_with_meta(self, current_text: str, history: Optional[List[Any]]) -> Tuple[str, TraceMeta]:
-        """构造上下文查询并返回判定元信息。"""
-        current = self._truncate_text(current_text)
         if not self.context_matching_enabled:
-            return current, {
-                "enabled": False,
-                "reason": "disabled_by_config",
-                "has_trigger": False,
-                "is_short_query": False,
-                "negative_hit": False,
-                "history_count": 0,
-                "current_text_len": int(len(current)),
-                "recent_contexts": [],
-            }
+            return current, meta
 
-        recent_contexts = self._extract_recent_context(history)
-        context_meta = self._evaluate_context_need(current, recent_contexts)
-        if not bool(context_meta.get("enabled", False)):
-            return current, context_meta
-        if not recent_contexts:
-            context_meta["enabled"] = False
-            context_meta["reason"] = "no_history"
-            return current, context_meta
+        # 收集历史用户输入
+        recent: List[str] = []
+        if history:
+            for turn in history:
+                if isinstance(turn, (list, tuple)) and len(turn) >= 2:
+                    user_text = self._normalize_input(str(turn[0]))
+                    if user_text and not self._is_invalid_after_clean(user_text):
+                        recent.append(self._truncate_text(user_text))
+        recent = recent[-self.context_cache_turns:]
 
-        contextual_query = self._merge_context_with_budget(current, recent_contexts)
-        context_meta["contextual_query"] = contextual_query
-        context_meta["current_query"] = current
-        context_meta["context_used"] = [x for x in recent_contexts if x and x in contextual_query and x != current]
-        return contextual_query, context_meta
+        # 合并上下文记忆中的历史
+        all_context = list(self.context_memory[-self.context_cache_turns:]) + recent
+
+        if not all_context:
+            return current, meta
+
+        contextual = self._merge_context_with_budget(current, all_context)
+        # 将当前输入存入上下文记忆
+        self.context_memory.append(self._truncate_text(self._normalize_input(current_text)))
+        if len(self.context_memory) > self.context_cache_turns * 2:
+            self.context_memory = self.context_memory[-self.context_cache_turns:]
+
+        meta.update({
+            "enabled": True, "reason": "context_enabled",
+            "history_count": int(len(all_context)),
+            "contextual_query": contextual,
+            "current_query": current,
+        })
+        return contextual, meta
 
     def _step12_prepare_query(
         self,
