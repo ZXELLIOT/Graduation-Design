@@ -237,9 +237,6 @@ def api_perf() -> Dict[str, Any]:
 
 
 if __name__ == "__main__":
-    print("=" * 50)
-    print("  SimCSE 检索式对话系统")
-    print("=" * 50)
     # 先加载模型和数据，再启动 Web（控制台显示进度条）
     get_dialog_comparator()
     print(f"\nWeb 服务: http://127.0.0.1:7860\n")

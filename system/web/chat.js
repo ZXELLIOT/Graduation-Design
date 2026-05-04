@@ -119,7 +119,41 @@ async function syncToggle(key, value) {
   try { await fetch("/api/settings/comparator", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) }); } catch (e) {}
 }
 
-aiToggle.addEventListener("change", () => syncToggle("ai", aiToggle.checked));
+function showAiPopup(success, detail) {
+  const popup = document.createElement("div");
+  popup.style.cssText = "position:fixed;top:20px;right:20px;z-index:999;padding:14px 18px;border-radius:10px;font-size:0.9rem;max-width:360px;box-shadow:0 6px 20px rgba(0,0,0,0.15);animation:rise 0.3s ease;";
+  popup.style.background = success ? "#dff5eb" : "#ffe1e1";
+  popup.style.color = success ? "#0b6e4f" : "#7b1e1e";
+  popup.style.border = success ? "1px solid #b7e6d3" : "1px solid #f2bbbb";
+  popup.textContent = detail;
+  document.body.appendChild(popup);
+  setTimeout(() => { popup.style.opacity = "0"; popup.style.transition = "opacity 0.5s"; }, 3000);
+  setTimeout(() => popup.remove(), 3500);
+}
+
+aiToggle.addEventListener("change", async () => {
+  const on = aiToggle.checked;
+  const t0 = performance.now();
+  try {
+    const res = await fetch("/api/settings/comparator", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ai_enhanced: on }),
+    });
+    const data = await res.json();
+    const ms = (performance.now() - t0).toFixed(0);
+    if (res.ok) {
+      showAiPopup(true, `AI 增强已${on ? "开启" : "关闭"} | 响应 ${ms}ms`);
+    } else {
+      aiToggle.checked = !on;
+      showAiPopup(false, `AI 增强${on ? "开启" : "关闭"}失败: ${data.detail || "未知错误"} | ${ms}ms`);
+    }
+  } catch (e) {
+    aiToggle.checked = !on;
+    showAiPopup(false, `AI 增强请求失败: 网络错误`);
+  }
+});
+
 ctxToggle.addEventListener("change", () => syncToggle("ctx", ctxToggle.checked));
 
 // ============================================================

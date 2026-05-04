@@ -122,18 +122,8 @@ def initialize_system() -> DialogComparator:
     print("              日常闲聊机器人本地服务 启动中             ")
     print("==========================================================\n")
 
-    # 初始化进度条
-    steps = ["检查数据文件", "加载语义模型", "加载向量索引", "初始化匹配引擎"]
-    total = len(steps)
-
-    def _progress(i: int, label: str):
-        bar = "█" * (i * 40 // total)
-        space = "░" * (40 - i * 40 // total)
-        pct = i * 100 // total
-        print(f"\r  [{bar}{space}] {pct}%  {label}", end="", flush=True)
-
     # 步骤1：运行依赖检查 — 确认 CSV 和 FAISS 索引文件存在且可读
-    _progress(0, steps[0])
+    print("[1/4] 检查数据文件...")
     exists_ok, missing_files = check_kb_exists()
     if not exists_ok:
         msg = "未能找到数据库文件:\n" + "\n".join(missing_files)
@@ -144,15 +134,15 @@ def initialize_system() -> DialogComparator:
         raise RuntimeError(f"数据库异常: {validate_msg}")
 
     # 步骤2：加载双塔编码引擎 — query encoder + response encoder
-    _progress(1, steps[1])
+    print("[2/4] 加载语义模型...")
     engine = SimCSEModelEngine()
 
     # 步骤3：加载 FAISS 双索引与文本列 — query_index + response_index + CSV
-    _progress(2, steps[2])
+    print("[3/4] 加载向量索引...")
     query_index, response_index, query_texts, reply_texts = load_database_columns(prefix=DB_PREFIX)
 
     # 步骤4：组装比较器 — 统一承载召回、重排、阈值与上下文策略
-    _progress(3, steps[3])
+    print("[4/4] 初始化匹配引擎...")
     comparator = DialogComparator(
         model_engine=engine,
         query_index=query_index,
@@ -170,10 +160,8 @@ def initialize_system() -> DialogComparator:
         context_matching_enabled=True,
     )
 
-    _progress(4, "完成!")
-    print()  # 换行
     total_pairs = int(comparator.doc_count)
-    print(f"系统就绪，知识库规模：{total_pairs} 条\n")
+    print(f"启动成功，知识库规模：{total_pairs} 条\n")
     return comparator
 
 
@@ -183,7 +171,3 @@ def get_dialog_comparator() -> DialogComparator:
     if _dialog_comparator_instance is None:
         _dialog_comparator_instance = initialize_system()
     return _dialog_comparator_instance
-
-
-
-
