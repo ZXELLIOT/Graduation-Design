@@ -1,4 +1,4 @@
-﻿"""
+"""
 system/comparator.py
 
 文件作用:
