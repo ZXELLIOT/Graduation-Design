@@ -84,7 +84,7 @@ AI_ENHANCED_DEFAULT = os.getenv("AI_ENHANCED_DEFAULT", "0") == "1"
 AI_ENHANCE_TOPK = int(os.getenv("AI_ENHANCE_TOPK", "5"))
 
 # 大模型名称
-AI_ENHANCE_MODEL_NAME = os.getenv("ARK_MODEL_NAME", "Doubao1.5-vision-pro")
+AI_ENHANCE_MODEL_NAME = os.getenv("ARK_MODEL_NAME", "doubao-seed-2-0-pro-260215")
 
 # API 地址
 AI_ENHANCE_RESPONSES_URL = os.getenv(
