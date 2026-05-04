@@ -41,7 +41,7 @@ if PROJECT_ROOT not in sys.path:
 
 from system.config import DB_CSV_PATH, RERANK_WEIGHTS
 from system.model_engine import SimCSEModelEngine
-from tests.config import TEST_DATA_DIR, TEST_MODELS_DIR, TEST_RESULTS_DIR
+from tests.tests_config import TEST_DATA_DIR, TEST_MODELS_DIR, TEST_RESULTS_DIR
 
 # ============================================================
 # 评测参数

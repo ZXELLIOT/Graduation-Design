@@ -40,7 +40,7 @@ from system.bootstrap import load_database_columns
 from system.comparator import DialogComparator
 from system.config import DB_PREFIX
 from system.model_engine import SimCSEModelEngine
-from tests.config import TEST_DATA_DIR, TEST_RESULTS_DIR
+from tests.tests_config import TEST_DATA_DIR, TEST_RESULTS_DIR
 
 # ============================================================
 # 评测参数
