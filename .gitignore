@@ -1,13 +1,43 @@
-.vscode
-*/__pycache__
+# === IDE ===
+.vscode/
 
-data_prep/LCCC-large
-data_prep/LCCC-small
+# === Python ===
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
 
-train/text2vec-base-chinese
+# === Virtual environment ===
+.venv/
+venv/
+env/
+ENV/
 
-*/data
-*/results
-*/models
-model
-runtime
+# === Environment variables (contains API keys) ===
+.env
+.env.local
+.env.*.local
+
+# === OS ===
+.DS_Store
+Thumbs.db
+
+# === Runtime & logs ===
+runtime/
+*.log
+
+# === Large model files (binary) ===
+model/
+train/text2vec-base-chinese/
+tests/models/
+
+# === Large datasets (raw JSON) ===
+data_prep/LCCC-large/
+data_prep/LCCC-small/
+
+# === Generated data & evaluation results ===
+db/data/
+tests/data/
+tests/results/
