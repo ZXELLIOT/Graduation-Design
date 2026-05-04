@@ -39,5 +39,7 @@ data_prep/LCCC-small/
 
 # === Generated data & evaluation results ===
 db/data/
-tests/data/
+tests/data/*
 tests/results/
+# 保留评测模块的测试用例文件
+!tests/data/eval_pairs.csv

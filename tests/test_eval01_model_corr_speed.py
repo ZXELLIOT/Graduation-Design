@@ -1,14 +1,37 @@
 """
 tests/test_eval01_model_corr_speed.py
 
-目标:
-    分别加载各模型的问句编码器，在 tests/data 基准数据集上做统一评测。
-    每个数据集按随机种子抽样 2000 条，分别评估 0/1 分类集与 0-5 打分集。
-输出:
-    仅输出 3 张图:
-    1) 响应速度对比图(含95%置信区间)
-    2) 0/1分类数据集热力图(AUC，跨种子均值)
-    3) 0-5数据集对比图(Spearman，含95%置信区间)
+评测目标:
+    将本项目训练的双塔模型与 4 个主流中文预训练模型进行基准对比。
+    在 5 个标准语义相似度数据集上统一评测，输出学术界常用的指标和图表。
+
+评测数据集:
+    0/1 二分类数据集（判断两句是否语义等价）:
+        - BQ (Bank Question):        银行金融领域问句匹配
+        - LCQMC:                     大规模中文问句匹配语料
+        - ATEC:                      支付宝金融问句相似度
+        - PAWS-X:                    跨语言释义检测
+
+    0-5 回归数据集（判断两句语义相似程度）:
+        - STS-B:                     语义文本相似度基准
+
+评测模型:
+    - 本项目模型: mysimcse 双塔 (query_encoder)
+    - text2vec-base-chinese:         CoSENT 训练的中文句向量模型
+    - bert-base-chinese:             Google 原生中文 BERT
+    - chinese-roberta-wwm-ext:       哈工大中文 RoBERTa
+    - paraphrase-multilingual-MiniLM-L12-v2: 多语言轻量释义模型
+
+评测指标:
+    0/1 数据集: Accuracy, Precision, Recall, F1, AUC
+    0-5 数据集: Spearman 相关系数, Pearson 相关系数
+    速度指标: 每句对平均编码耗时 (ms)
+
+输出文件:
+    - speed_compare.png:           各模型平均处理速度对比（含95%CI）
+    - classification_heatmap.png:  0/1 数据集 AUC 热力图
+    - regression_compare.png:      0-5 数据集 Spearman 对比
+    - metrics_table.csv:           完整指标表格
 """
 
 import os
@@ -24,6 +47,7 @@ import torch
 from tqdm import tqdm
 from transformers import AutoModel, AutoTokenizer
 
+# 路径初始化
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(CURRENT_DIR)
 if PROJECT_ROOT not in sys.path:
@@ -32,19 +56,57 @@ if PROJECT_ROOT not in sys.path:
 from system.model_engine import SimCSEModelEngine
 from tests.config import TEST_DATA_DIR, TEST_MODELS_DIR, TEST_RESULTS_DIR
 
-SAMPLE_COUNT = 2000
-EPS = 1e-8
-EVAL_SEEDS = [2026, 2027, 2028, 2029, 2030]
+# ============================================================
+# 评测超参数
+# ============================================================
+
+# 每个数据集随机采样的句对数（控制评测时间）
+SAMPLE_COUNT = 300
+
+# 随机种子列表（用于多次重复评测计算置信区间）
+EVAL_SEEDS = [2026, 2027, 2028]
+
+# 每句最长截断长度
+MAX_LEN = 64
+
+# 批量编码大小
+BATCH_SIZE = 64
+
+# 95% 置信区间 Z 值
 CI_Z = 1.96
+
+# 浮点容差
+EPS = 1e-8
+
+# 余弦相似度阈值（用于将余弦值转为 0/1 预测）
+COS_THRESHOLD = 0.5
 
 
 def _cosine_scores(e1: np.ndarray, e2: np.ndarray) -> np.ndarray:
+    """
+    计算两组向量之间的余弦相似度。
+
+    数学定义: cos(A,B) = (A·B) / (|A| × |B|)
+
+    参数:
+        e1: 形状为 [N, D] 的向量矩阵。
+        e2: 形状为 [N, D] 的向量矩阵。
+
+    返回:
+        长度为 N 的一维余弦相似度数组。
+    """
     dot = np.sum(e1 * e2, axis=1)
     norm = np.linalg.norm(e1, axis=1) * np.linalg.norm(e2, axis=1) + EPS
     return dot / norm
 
 
 def _safe_spearman(labels: np.ndarray, preds: np.ndarray) -> float:
+    """
+    安全计算 Spearman 秩相关系数。
+
+    Spearman 衡量两个变量的单调关系强度，范围 [-1, 1]。
+    对 0-5 评分数据集，它是衡量语义相似度排序质量的权威指标。
+    """
     if labels.size < 2:
         return 0.0
     if np.std(labels) <= EPS or np.std(preds) <= EPS:
@@ -58,50 +120,89 @@ def _safe_spearman(labels: np.ndarray, preds: np.ndarray) -> float:
         return 0.0
 
 
-def _safe_auc(labels: np.ndarray, preds: np.ndarray) -> float:
-    """不依赖 sklearn 的 AUC 计算，仅用于二分类。"""
-    if labels.size < 2 or preds.size < 2:
+def _safe_pearson(labels: np.ndarray, preds: np.ndarray) -> float:
+    """
+    安全计算 Pearson 线性相关系数。
+
+    Pearson 衡量两个变量的线性相关强度，范围 [-1, 1]。
+    常用于补充 Spearman（Spearman 看排序，Pearson 看线性）。
+    """
+    if labels.size < 2:
         return 0.0
-    y = np.asarray(labels, dtype=np.float64)
-    s = np.asarray(preds, dtype=np.float64)
-    y_bin = (y >= 0.5).astype(np.int32)
-    pos = int(np.sum(y_bin == 1))
-    neg = int(np.sum(y_bin == 0))
-    if pos == 0 or neg == 0:
+    if np.std(labels) <= EPS or np.std(preds) <= EPS:
+        return 0.0
+    try:
+        corr = float(pd.Series(labels).corr(pd.Series(preds), method="pearson"))
+        if math.isnan(corr):
+            return 0.0
+        return corr
+    except Exception:
         return 0.0
 
-    order = np.argsort(s)
-    ranks = np.empty_like(order, dtype=np.float64)
-    ranks[order] = np.arange(1, len(s) + 1, dtype=np.float64)
 
-    sorted_s = s[order]
-    n = len(sorted_s)
-    i = 0
-    while i < n:
-        j = i
-        while j + 1 < n and abs(sorted_s[j + 1] - sorted_s[i]) <= EPS:
-            j += 1
-        if j > i:
-            avg_rank = float((i + 1 + j + 1) / 2.0)
-            ranks[order[i : j + 1]] = avg_rank
-        i = j + 1
+def _binary_metrics(labels: np.ndarray, preds: np.ndarray, threshold: float = COS_THRESHOLD) -> Dict[str, float]:
+    """
+    计算二分类评估指标。
 
-    sum_pos_ranks = float(np.sum(ranks[y_bin == 1]))
-    auc = (sum_pos_ranks - pos * (pos + 1) / 2.0) / max(pos * neg, 1)
-    return float(max(0.0, min(1.0, auc)))
+    将余弦相似度按阈值二值化后，与真实 0/1 标签对比计算:
+        - Accuracy:  整体预测正确率
+        - Precision: 预测为正的样本中真正的正样本比例
+        - Recall:    真正正样本中被预测出来的比例
+        - F1:        Precision 和 Recall 的调和平均
+        - AUC:       不依赖阈值的排序质量指标（用 Wilcoxon-Mann-Whitney 统计量近似）
 
+    参数:
+        labels: 真实标签 (0 或 1)。
+        preds:  预测余弦相似度。
+        threshold: 二值化阈值。
 
-def _semantic_judgement_score(task_type: str, labels: np.ndarray, preds: np.ndarray) -> float:
-    """统一语义判断能力分到0-1区间，便于跨任务解释。"""
-    if task_type == "classification":
-        return _safe_auc(labels, preds)
+    返回:
+        包含各指标的字典。
+    """
+    y_true = np.asarray(labels, dtype=np.int32)
+    y_pred_bin = (np.asarray(preds, dtype=np.float64) >= threshold).astype(np.int32)
 
-    spearman = _safe_spearman(labels, preds)
-    # Spearman范围为[-1,1]，线性映射到[0,1]后更直观。
-    return float(max(0.0, min(1.0, (spearman + 1.0) / 2.0)))
+    # --- 计算混淆矩阵四要素 ---
+    tp = int(np.sum((y_pred_bin == 1) & (y_true == 1)))
+    fp = int(np.sum((y_pred_bin == 1) & (y_true == 0)))
+    fn = int(np.sum((y_pred_bin == 0) & (y_true == 1)))
+    tn = int(np.sum((y_pred_bin == 0) & (y_true == 0)))
+    total = tp + fp + fn + tn
+
+    accuracy = (tp + tn) / max(total, 1)
+    precision = tp / max(tp + fp, 1)
+    recall = tp / max(tp + fn, 1)
+    f1 = 2 * precision * recall / max(precision + recall, EPS)
+
+    # --- AUC（手动计算，避免 sklearn 依赖）---
+    # 基于 Wilcoxon-Mann-Whitney 统计量: AUC = P(正样本分 > 负样本分)
+    pos_scores = np.asarray(preds, dtype=np.float64)[y_true == 1]
+    neg_scores = np.asarray(preds, dtype=np.float64)[y_true == 0]
+    if len(pos_scores) == 0 or len(neg_scores) == 0:
+        auc = 0.5
+    else:
+        n_pos = len(pos_scores)
+        n_neg = len(neg_scores)
+        # 对每对 (pos, neg) 计数，pos > neg 则得分
+        pos_greater = np.sum(
+            (pos_scores[:, None] > neg_scores[None, :]).astype(np.float64)
+        )
+        pos_equal = np.sum(
+            (np.abs(pos_scores[:, None] - neg_scores[None, :]) < EPS).astype(np.float64)
+        )
+        auc = (pos_greater + 0.5 * pos_equal) / (n_pos * n_neg)
+
+    return {
+        "Accuracy": float(accuracy),
+        "Precision": float(precision),
+        "Recall": float(recall),
+        "F1": float(f1),
+        "AUC": float(auc),
+    }
 
 
 def _mean_ci95(values: np.ndarray) -> Tuple[float, float]:
+    """计算均值和 95% 置信区间半宽。"""
     arr = np.asarray(values, dtype=np.float64)
     if arr.size == 0:
         return 0.0, 0.0
@@ -121,36 +222,60 @@ def _to_np_float32(v: Any) -> np.ndarray:
 
 
 def _infer_task_type(dataset_name: str, labels: np.ndarray) -> str:
+    """
+    自动推断数据集任务类型。
+
+    规则:
+        - 名称含 stsb/sts-b → regression（0-5 打分）
+        - 标签仅含 0 和 1 → classification（0/1 二分类）
+        - 其他 → regression
+    """
     ds = dataset_name.lower()
     if "stsb" in ds or "sts-b" in ds:
         return "regression"
 
     uniq = np.unique(np.round(labels, 6))
-    if uniq.size <= 2 and set(np.asarray(uniq, dtype=np.float64).tolist()).issubset({0.0, 1.0}):
+    if uniq.size <= 2 and set(np.asarray(uniq, dtype=np.float64).tolist()).issubset(
+        {0.0, 1.0}
+    ):
         return "classification"
     return "regression"
 
 
-def _load_pair_datasets(sample_count: int = SAMPLE_COUNT, random_seed: int = 2026) -> Dict[str, Tuple[List[str], List[str], np.ndarray, str]]:
+def _load_pair_datasets(
+    sample_count: int = SAMPLE_COUNT, random_seed: int = 2026
+) -> Dict[str, Tuple[List[str], List[str], np.ndarray, str]]:
+    """
+    加载 tests/data/ 下的标准评测句对数据集。
+
+    数据格式: TSV，三列 (id, sentence1, sentence2, label)
+    自动排除 lccc 数据集（那是训练数据，不是标准评测数据）。
+    """
     dataset_map: Dict[str, Tuple[List[str], List[str], np.ndarray, str]] = {}
 
     for file_name in sorted(os.listdir(TEST_DATA_DIR)):
         if not file_name.endswith(".txt"):
             continue
         path = os.path.join(TEST_DATA_DIR, file_name)
+
+        # 读取 TSV 格式数据
         df = pd.read_csv(path, sep="\t", header=None, names=["s1", "s2", "label"])
         df = df.dropna(subset=["s1", "s2", "label"]).copy()
         df["label"] = pd.to_numeric(df["label"], errors="coerce")
         df = df.dropna(subset=["label"])
+
         if df.empty:
             continue
+
+        # 随机采样控制评测时间
         n = min(sample_count, len(df))
         df = df.sample(n=n, random_state=random_seed)
+
         s1 = df["s1"].astype(str).tolist()
         s2 = df["s2"].astype(str).tolist()
         dataset_name = file_name.replace("_test.txt", "").replace(".txt", "")
 
-        # 评测中显式排除 lccc 数据集。
+        # 排除训练/语料数据集
         if "lccc" in dataset_name.lower():
             continue
 
@@ -164,19 +289,44 @@ def _load_pair_datasets(sample_count: int = SAMPLE_COUNT, random_seed: int = 202
     return dataset_map
 
 
-def _encode_with_hf(sentences: List[str], tokenizer: Any, model: Any, device: Any, batch_size: int = 128) -> np.ndarray:
+def _encode_with_hf(
+    sentences: List[str],
+    tokenizer: Any,
+    model: Any,
+    device: Any,
+    batch_size: int = BATCH_SIZE,
+) -> np.ndarray:
+    """
+    使用 HuggingFace 标准模型编码句子为向量。
+
+    对于有 pooler_output 的模型取 pooler_output，
+    否则取 last_hidden_state 的 [CLS] 位置（索引 0）。
+    """
     arr: List[np.ndarray] = []
     with torch.no_grad():
         for i in range(0, len(sentences), batch_size):
             batch = sentences[i : i + batch_size]
-            tokens = tokenizer(batch, padding=True, truncation=True, return_tensors="pt", max_length=64).to(device)
+            tokens = tokenizer(
+                batch,
+                padding=True,
+                truncation=True,
+                return_tensors="pt",
+                max_length=MAX_LEN,
+            ).to(device)
             out = model(**tokens)
+            # pooler_output: BERT 系列的句向量输出头（tanh 激活）
             if hasattr(out, "pooler_output") and out.pooler_output is not None:
                 emb = out.pooler_output
             else:
+                # 无 pooler 则用 [CLS] token 的最后一层隐藏状态
                 emb = out.last_hidden_state[:, 0, :]
             arr.append(emb.detach().cpu().numpy().astype(np.float32))
     return np.vstack(arr)
+
+
+# ============================================================
+# 图表绘制函数
+# ============================================================
 
 
 def _bar_plot(
@@ -188,40 +338,57 @@ def _bar_plot(
     color: str,
     err_col: str = "",
 ) -> None:
-    fig, ax = plt.subplots(figsize=(9, 5.2))
+    """绘制带误差线的柱状图。"""
+    fig, ax = plt.subplots(figsize=(10, 5.5))
     x = np.arange(len(df))
     y = np.asarray(df[y_col].to_numpy(), dtype=np.float64)
     yerr = None
     if err_col and err_col in df.columns:
         yerr = np.asarray(df[err_col].to_numpy(), dtype=np.float64)
-    bars = ax.bar(x, y, yerr=yerr, capsize=4 if yerr is not None else 0, color=color, edgecolor="#1f2a37")
+    bars = ax.bar(
+        x, y, yerr=yerr, capsize=4 if yerr is not None else 0,
+        color=color, edgecolor="#1f2a37",
+    )
     ax.set_xticks(x)
     ax.set_xticklabels(df[x_col].tolist(), rotation=20, ha="right")
-    ax.set_title(title)
+    ax.set_title(title, fontsize=14)
+    ax.set_ylabel(y_col)
     for b in bars:
         h = b.get_height()
-        ax.text(b.get_x() + b.get_width() / 2.0, h + max(0.005, abs(h) * 0.01), f"{h:.4f}", ha="center", va="bottom", fontsize=9)
+        ax.text(
+            b.get_x() + b.get_width() / 2.0,
+            h + max(0.005, abs(h) * 0.01),
+            f"{h:.4f}",
+            ha="center",
+            va="bottom",
+            fontsize=9,
+        )
     fig.tight_layout()
     fig.savefig(out_path, dpi=300, bbox_inches="tight")
     plt.close(fig)
 
 
-def _heatmap_plot(matrix_df: pd.DataFrame, out_path: str, title: str, cbar_label: str) -> None:
+def _heatmap_plot(
+    matrix_df: pd.DataFrame, out_path: str, title: str, cbar_label: str
+) -> None:
+    """绘制学术论文风格的热力图。"""
     vals = matrix_df.values.astype(float)
     fig_w = max(8, 1.2 * vals.shape[1] + 2)
     fig_h = max(4.5, 0.7 * vals.shape[0] + 2)
     fig, ax = plt.subplots(figsize=(fig_w, fig_h))
-    im = ax.imshow(vals, cmap="YlGnBu", vmin=-1.0, vmax=1.0, aspect="auto")
+    im = ax.imshow(vals, cmap="YlGnBu", vmin=0.0, vmax=1.0, aspect="auto")
 
     ax.set_xticks(np.arange(vals.shape[1]))
     ax.set_xticklabels(list(matrix_df.columns), rotation=20, ha="right")
     ax.set_yticks(np.arange(vals.shape[0]))
     ax.set_yticklabels(list(matrix_df.index))
-    ax.set_title(title)
+    ax.set_title(title, fontsize=14)
 
     for i in range(vals.shape[0]):
         for j in range(vals.shape[1]):
-            ax.text(j, i, f"{vals[i, j]:.3f}", ha="center", va="center", fontsize=9)
+            ax.text(
+                j, i, f"{vals[i, j]:.3f}", ha="center", va="center", fontsize=9
+            )
 
     cbar = fig.colorbar(im, ax=ax)
     cbar.set_label(cbar_label)
@@ -230,72 +397,87 @@ def _heatmap_plot(matrix_df: pd.DataFrame, out_path: str, title: str, cbar_label
     plt.close(fig)
 
 
+# ============================================================
+# 主评测流程
+# ============================================================
+
+
 def run_eval() -> None:
+    """执行完整的模型基准对比评测。"""
     os.makedirs(TEST_RESULTS_DIR, exist_ok=True)
     out_dir = os.path.join(TEST_RESULTS_DIR, "eval01_model_corr_speed")
     os.makedirs(out_dir, exist_ok=True)
 
-    dataset_maps = {seed: _load_pair_datasets(SAMPLE_COUNT, random_seed=seed) for seed in EVAL_SEEDS}
-
-    plt.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei", "Arial Unicode MS", "DejaVu Sans"]
+    # 配置中文字体
+    plt.rcParams["font.sans-serif"] = [
+        "Microsoft YaHei", "SimHei", "Arial Unicode MS", "DejaVu Sans"
+    ]
     plt.rcParams["axes.unicode_minus"] = False
 
-    per_dataset_rows: List[Dict[str, object]] = []
-    speed_seed_rows: List[Dict[str, object]] = []
+    # 按多种子加载数据（用于置信区间计算）
+    dataset_maps = {
+        seed: _load_pair_datasets(SAMPLE_COUNT, random_seed=seed)
+        for seed in EVAL_SEEDS
+    }
 
-    # 本模型
+    # ============================================================
+    # 评测 1: 本项目双塔模型
+    # ============================================================
     engine = SimCSEModelEngine()
-    model_total_steps = sum(len(dataset_maps[seed]) for seed in EVAL_SEEDS)
-    model_pbar = tqdm(
-        total=model_total_steps,
-        desc="本模型评测",
-        unit="任务",
-        dynamic_ncols=True,
-        mininterval=0.2,
-    )
+    all_rows: List[Dict[str, Any]] = []
+    speed_rows: List[Dict[str, Any]] = []
+
+    print("\n===== 正在评测本项目模型 =====")
     for seed in EVAL_SEEDS:
         dataset_map = dataset_maps[seed]
-        elapsed_samples = 0
-        elapsed_ms_total = 0.0
-        for ds_name, (s1, s2, labels, task_type) in dataset_map.items():
-            model_pbar.set_postfix_str(f"seed={seed}, ds={ds_name}")
+        for ds_name, (s1, s2, labels, task_type) in tqdm(
+            dataset_map.items(),
+            total=len(dataset_map),
+            desc=f"种子={seed}",
+            unit="数据集",
+        ):
+            # 编码计时
             t0 = time.perf_counter()
-            e1 = engine.encode(s1, encoder="query", batch_size=128, show_progress=False)
-            e2 = engine.encode(s2, encoder="query", batch_size=128, show_progress=False)
-            ms = (time.perf_counter() - t0) * 1000.0
+            e1 = engine.encode(s1, encoder="query", batch_size=BATCH_SIZE, show_progress=False)
+            e2 = engine.encode(s2, encoder="query", batch_size=BATCH_SIZE, show_progress=False)
+            ms_per_pair = (time.perf_counter() - t0) * 1000.0 / max(len(s1), 1)
+
+            # 计算余弦相似度作为预测分数
             e1_np = _to_np_float32(e1)
             e2_np = _to_np_float32(e2)
             preds = _cosine_scores(e1_np, e2_np)
-            spearman = _safe_spearman(labels, preds)
-            auc = _safe_auc(labels, preds) if task_type == "classification" else np.nan
-            sem_score = _semantic_judgement_score(task_type, labels, preds)
 
-            per_dataset_rows.append(
+            # 按任务类型计算相应指标
+            if task_type == "classification":
+                metrics = _binary_metrics(labels, preds)
+                metrics["Spearman"] = _safe_spearman(labels, preds)
+                metrics["Pearson"] = _safe_pearson(labels, preds)
+            else:
+                metrics = {
+                    "Spearman": _safe_spearman(labels, preds),
+                    "Pearson": _safe_pearson(labels, preds),
+                    "Accuracy": float("nan"),
+                    "Precision": float("nan"),
+                    "Recall": float("nan"),
+                    "F1": float("nan"),
+                    "AUC": float("nan"),
+                }
+
+            all_rows.append(
                 {
                     "模型": "本项目模型",
-                    "随机种子": int(seed),
+                    "随机种子": seed,
                     "数据集": ds_name,
                     "任务类型": task_type,
-                    "Spearman": spearman,
-                    "AUC": float(auc) if not np.isnan(auc) else np.nan,
-                    "语义判断分": sem_score,
-                    "样本数": int(len(labels)),
+                    "样本数": len(labels),
+                    "平均耗时ms": ms_per_pair,
+                    **metrics,
                 }
             )
-            elapsed_ms_total += ms
-            elapsed_samples += len(labels)
-            model_pbar.update(1)
 
-        speed_seed_rows.append(
-            {
-                "模型": "本项目模型",
-                "随机种子": int(seed),
-                "平均耗时ms": elapsed_ms_total / max(elapsed_samples, 1),
-            }
-        )
-    model_pbar.close()
-
-    # 基准模型
+    # ============================================================
+    # 评测 2: 基准模型
+    # ============================================================
     baseline_map = {
         "text2vec": "text2vec-base-chinese",
         "bert": "bert-base-chinese",
@@ -309,124 +491,163 @@ def run_eval() -> None:
         total=len(baseline_map),
         desc="基准模型评测",
         unit="个",
-        dynamic_ncols=True,
-        mininterval=0.2,
     ):
         path = os.path.join(TEST_MODELS_DIR, folder)
         if not os.path.exists(path):
+            print(f"  [跳过] 模型目录不存在: {path}")
             continue
+
         tokenizer = AutoTokenizer.from_pretrained(path, local_files_only=True)
         model = AutoModel.from_pretrained(path, local_files_only=True).to(device)
         model.eval()
 
-        model_name = f"基准模型_{short_name}"
-        baseline_total_steps = sum(len(dataset_maps[seed]) for seed in EVAL_SEEDS)
-        baseline_pbar = tqdm(
-            total=baseline_total_steps,
-            desc=f"{short_name}评测",
-            unit="任务",
-            leave=False,
-            dynamic_ncols=True,
-            mininterval=0.2,
-        )
+        model_name = f"基准_{short_name}"
+        print(f"\n----- 正在评测 {model_name} -----")
+
         for seed in EVAL_SEEDS:
             dataset_map = dataset_maps[seed]
-            elapsed_samples = 0
-            elapsed_ms_total = 0.0
-            for ds_name, (s1, s2, labels, task_type) in dataset_map.items():
-                baseline_pbar.set_postfix_str(f"seed={seed}, ds={ds_name}")
+            for ds_name, (s1, s2, labels, task_type) in tqdm(
+                dataset_map.items(),
+                total=len(dataset_map),
+                desc=f"{short_name} seed={seed}",
+                unit="数据集",
+                leave=False,
+            ):
+                # 编码计时
                 t0 = time.perf_counter()
-                e1_np = _encode_with_hf(s1, tokenizer, model, device=device, batch_size=128)
-                e2_np = _encode_with_hf(s2, tokenizer, model, device=device, batch_size=128)
-                ms = (time.perf_counter() - t0) * 1000.0
-                preds = _cosine_scores(e1_np, e2_np)
-                spearman = _safe_spearman(labels, preds)
-                auc = _safe_auc(labels, preds) if task_type == "classification" else np.nan
-                sem_score = _semantic_judgement_score(task_type, labels, preds)
+                e1_np = _encode_with_hf(s1, tokenizer, model, device=device)
+                e2_np = _encode_with_hf(s2, tokenizer, model, device=device)
+                ms_per_pair = (time.perf_counter() - t0) * 1000.0 / max(len(s1), 1)
 
-                per_dataset_rows.append(
+                preds = _cosine_scores(e1_np, e2_np)
+
+                if task_type == "classification":
+                    metrics = _binary_metrics(labels, preds)
+                    metrics["Spearman"] = _safe_spearman(labels, preds)
+                    metrics["Pearson"] = _safe_pearson(labels, preds)
+                else:
+                    metrics = {
+                        "Spearman": _safe_spearman(labels, preds),
+                        "Pearson": _safe_pearson(labels, preds),
+                        "Accuracy": float("nan"),
+                        "Precision": float("nan"),
+                        "Recall": float("nan"),
+                        "F1": float("nan"),
+                        "AUC": float("nan"),
+                    }
+
+                all_rows.append(
                     {
                         "模型": model_name,
-                        "随机种子": int(seed),
+                        "随机种子": seed,
                         "数据集": ds_name,
                         "任务类型": task_type,
-                        "Spearman": spearman,
-                        "AUC": float(auc) if not np.isnan(auc) else np.nan,
-                        "语义判断分": sem_score,
-                        "样本数": int(len(labels)),
+                        "样本数": len(labels),
+                        "平均耗时ms": ms_per_pair,
+                        **metrics,
                     }
                 )
-                elapsed_ms_total += ms
-                elapsed_samples += len(labels)
-                baseline_pbar.update(1)
 
-            speed_seed_rows.append(
-                {
-                    "模型": model_name,
-                    "随机种子": int(seed),
-                    "平均耗时ms": elapsed_ms_total / max(elapsed_samples, 1),
-                }
-            )
-        baseline_pbar.close()
+        # 释放 GPU 内存
+        del model, tokenizer
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
-    speed_seed_df = pd.DataFrame(speed_seed_rows)
-    if speed_seed_df.empty:
+    # ============================================================
+    # 数据整理与图表生成
+    # ============================================================
+    df_all = pd.DataFrame(all_rows)
+    if df_all.empty:
         raise RuntimeError("无可用评测结果。")
 
-    speed_rows: List[Dict[str, object]] = []
-    for model_name in sorted(speed_seed_df["模型"].astype(str).unique().tolist()):
-        vals = speed_seed_df[speed_seed_df["模型"] == model_name]["平均耗时ms"].to_numpy(dtype=np.float64)
-        mean_v, ci_v = _mean_ci95(vals)
-        speed_rows.append({"模型": model_name, "平均耗时ms": mean_v, "速度95CI": ci_v})
-    speed_df = pd.DataFrame(speed_rows)
+    # 保存完整指标表
+    df_all.to_csv(os.path.join(out_dir, "metrics_table.csv"), index=False, encoding="utf-8-sig")
 
-    # 只保留速度图，不再输出总Spearman图。
+    # --- 图1: 速度对比 ---
+    speed_group = df_all.groupby(["模型", "随机种子"], as_index=False).agg(
+        平均耗时ms=("平均耗时ms", "mean")
+    )
+    speed_summary: List[Dict[str, Any]] = []
+    for model_name in sorted(speed_group["模型"].unique()):
+        vals = speed_group[speed_group["模型"] == model_name]["平均耗时ms"].values
+        mean_v, ci_v = _mean_ci95(vals)
+        speed_summary.append(
+            {"模型": model_name, "平均耗时ms": mean_v, "速度95CI": ci_v}
+        )
+    speed_df = pd.DataFrame(speed_summary).sort_values("平均耗时ms")
+
     _bar_plot(
-        speed_df.sort_values(by="平均耗时ms", ascending=True),
+        speed_df,
         "模型",
         "平均耗时ms",
-        "响应速度对比(平均耗时ms, 95%CI)",
+        "响应速度对比（每句对平均耗时 ms，95%CI）",
         os.path.join(out_dir, "speed_compare.png"),
         "#3b82f6",
         err_col="速度95CI",
     )
 
-    per_dataset_df = pd.DataFrame(per_dataset_rows)
+    # --- 图2: 0/1 分类数据集 AUC 热力图 ---
+    cls_df = df_all[df_all["任务类型"] == "classification"].copy()
+    if not cls_df.empty:
+        cls_matrix = cls_df.pivot_table(
+            index="模型", columns="数据集", values="AUC", aggfunc="mean"
+        ).fillna(0.0)
+        _heatmap_plot(
+            cls_matrix,
+            os.path.join(out_dir, "classification_heatmap.png"),
+            "0/1分类数据集 AUC 对比",
+            "AUC",
+        )
 
-    # 图2: 0/1分类数据集热力图(使用AUC，更适合分类任务)
-    cls_df = per_dataset_df[per_dataset_df["任务类型"] == "classification"].copy()
-    if cls_df.empty:
-        raise RuntimeError("未找到0/1分类数据集，无法生成分类热力图。")
-    cls_matrix = cls_df.pivot_table(index="模型", columns="数据集", values="AUC", aggfunc="mean").fillna(0.0)
-    _heatmap_plot(
-        cls_matrix,
-        os.path.join(out_dir, "classification_heatmap.png"),
-        "0/1分类数据集热力图(AUC)",
-        "AUC",
-    )
+        # 打印分类指标摘要
+        print("\n===== 0/1 分类数据集指标摘要 =====")
+        cls_summary = cls_df.groupby(["模型", "数据集"], as_index=False).agg(
+            Accuracy=("Accuracy", "mean"),
+            Precision=("Precision", "mean"),
+            Recall=("Recall", "mean"),
+            F1=("F1", "mean"),
+            AUC=("AUC", "mean"),
+        )
+        print(cls_summary.to_string(index=False))
 
-    # 图3: 0-5 数据集模型对比图（Spearman）
-    reg_df = per_dataset_df[per_dataset_df["任务类型"] == "regression"].copy()
-    if reg_df.empty:
-        raise RuntimeError("未找到0-5打分数据集，无法生成0-5对比图。")
+    # --- 图3: 0-5 数据集 Spearman 对比 ---
+    reg_df = df_all[df_all["任务类型"] == "regression"].copy()
+    if not reg_df.empty:
+        reg_group = reg_df.groupby(["模型", "随机种子"], as_index=False).agg(
+            Spearman=("Spearman", "mean"),
+            Pearson=("Pearson", "mean"),
+        )
+        reg_summary: List[Dict[str, Any]] = []
+        for model_name in sorted(reg_group["模型"].unique()):
+            spearman_vals = reg_group[reg_group["模型"] == model_name]["Spearman"].values
+            pearson_vals = reg_group[reg_group["模型"] == model_name]["Pearson"].values
+            sp_mean, sp_ci = _mean_ci95(spearman_vals)
+            pr_mean, pr_ci = _mean_ci95(pearson_vals)
+            reg_summary.append(
+                {
+                    "模型": model_name,
+                    "Spearman": sp_mean,
+                    "Spearman95CI": sp_ci,
+                    "Pearson": pr_mean,
+                }
+            )
+        reg_model_df = pd.DataFrame(reg_summary).sort_values("Spearman", ascending=False)
 
-    reg_seed_df = reg_df.groupby(["模型", "随机种子"], as_index=False).agg(Spearman=("Spearman", "mean"))
-    reg_rows: List[Dict[str, object]] = []
-    for model_name in sorted(reg_seed_df["模型"].astype(str).unique().tolist()):
-        vals = reg_seed_df[reg_seed_df["模型"] == model_name]["Spearman"].to_numpy(dtype=np.float64)
-        mean_v, ci_v = _mean_ci95(vals)
-        reg_rows.append({"模型": model_name, "Spearman": mean_v, "Spearman95CI": ci_v})
-    reg_model_df = pd.DataFrame(reg_rows).sort_values(by="Spearman", ascending=False)
+        _bar_plot(
+            reg_model_df,
+            "模型",
+            "Spearman",
+            "0-5数据集 Spearman 相关系数对比（95%CI）",
+            os.path.join(out_dir, "regression_compare.png"),
+            "#2a9d8f",
+            err_col="Spearman95CI",
+        )
 
-    _bar_plot(
-        reg_model_df,
-        "模型",
-        "Spearman",
-        "0-5数据集相似度对比(Spearman, 95%CI)",
-        os.path.join(out_dir, "score_compare.png"),
-        "#2a9d8f",
-        err_col="Spearman95CI",
-    )
+        # 打印回归指标摘要
+        print("\n===== 0-5 数据集指标摘要 =====")
+        print(reg_model_df.to_string(index=False))
+
+    print(f"\n评测完成，结果保存至: {out_dir}")
 
 
 if __name__ == "__main__":

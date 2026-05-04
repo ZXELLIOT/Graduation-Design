@@ -1,12 +1,24 @@
 """
 tests/test_eval02_retrieval_algo_db.py
 
-目标:
-    在 db/data/lccc_large.csv 中抽样 1000 条问答，评测三种检索策略的准确性与速度。
+评测目标:
+    在相同测试数据下，对比三种检索算法的输出效果和时间性能。
+    不对输出准确性做模型自动判断，只输出原始对比数据供人工分析。
+
+三种检索算法:
+    算法A: 全量余弦搜索 — 用户问句向量与语料库所有问句向量逐一计算余弦相似度
+    算法B: 全量问答加权搜索 — 用户问句与语料库所有问句+答句加权计算相似度
+    算法C: FAISS精排 — 高性能向量索引粗召回 + 问问/问答加权重排
+
+测试数据:
+    从 tests/data/eval_pairs.csv 读取测试用例
+    从 lccc_large.csv 构建不同规模的语料库 (1k/5k/10k/50k)
+
 输出:
-    仅输出 2 张图:
-    1) 准确性对比图(本地语义评分)
-    2) 反应时间对比图
+    - eval02_cases_table.csv:      每个测试用例的输入/预期/三种算法输出
+    - eval02_time_gradient.csv:    不同数据规模下各算法的时间对比
+    - time_gradient.png:           时间增长梯度折线图
+    - speed_compare.png:           三种算法的平均耗时柱状图
 """
 
 import os
@@ -16,9 +28,8 @@ from typing import Any, Dict, List, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
-import torch
+import pandas as pd
 from tqdm import tqdm
-from transformers import AutoModel, AutoTokenizer
 
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(CURRENT_DIR)
@@ -29,204 +40,116 @@ from system.bootstrap import load_database_columns
 from system.comparator import DialogComparator
 from system.config import DB_PREFIX
 from system.model_engine import SimCSEModelEngine
-from tests.config import TEST_RESULTS_DIR
+from tests.config import TEST_DATA_DIR, TEST_RESULTS_DIR
 
-SAMPLE_COUNT = 1000
+# ============================================================
+# 评测参数
+# ============================================================
+
+# 测试用例文件（由对话历史中生成，30对 QA）
+EVAL_PAIRS_CSV = os.path.join(TEST_DATA_DIR, "eval_pairs.csv")
+
+# 数据规模梯度（用于观察时间增长趋势）
+CORPUS_SIZES = [1000, 5000, 10000, 50000]
+
+# 全量扫描分块大小（避免单次矩阵乘法撑爆内存）
+CHUNK_SIZE = 2048
+
+# 编码批大小
+BATCH_SIZE = 64
+
 EPS = 1e-8
-LOCAL_EVAL_MODEL_DIR = r"C:\software\class\simcse-demo\tests\models\paraphrase-multilingual-MiniLM-L12-v2"
-COMPARATOR_TOP_K = 10
-FULL_SCAN_CHUNK_SIZE = 4096
-TARGET_DB_SIZE_FOR_SPEED_EST = 1_000_000
-FIXED_FULLSCAN_EST_FACTOR = 0.2778 * 500
+
+# 本地比较器精排数量
+RERANK_TOP_K = 10
 
 
-class HFQueryAdapter:
-    """单塔 HF 模型适配器，仅用于本地语义评审打分。"""
-
-    def __init__(self, model_path: str, device: str):
-        self.tokenizer = AutoTokenizer.from_pretrained(model_path, local_files_only=True)
-        self.model = AutoModel.from_pretrained(model_path, local_files_only=True).to(device)
-        self.model.eval()
-        self.device = device
-
-    def encode_one(self, text: str, encoder: str = "query") -> torch.Tensor:
-        _ = encoder
-        with torch.no_grad():
-            tok = self.tokenizer([str(text)], padding=True, truncation=True, return_tensors="pt", max_length=64).to(self.device)
-            out = self.model(**tok)
-            if hasattr(out, "pooler_output") and out.pooler_output is not None:
-                emb = out.pooler_output
-            else:
-                emb = out.last_hidden_state[:, 0, :]
-        return emb[0].detach().cpu()
-
-
-def _to_np_float32(v: Any) -> np.ndarray:
-    """兼容 torch.Tensor / numpy.ndarray 两种向量输出。"""
-    if hasattr(v, "detach") and hasattr(v, "cpu") and hasattr(v, "numpy"):
-        return v.detach().cpu().numpy().astype(np.float32).reshape(-1)
-    return np.asarray(v, dtype=np.float32).reshape(-1)
-
-
-def _bar_plot(df, x_col, y_col, title, out_path, color):
-    fig, ax = plt.subplots(figsize=(9, 5.2))
-    x = np.arange(len(df))
-    y = np.asarray(df[y_col].to_numpy(), dtype=np.float64)
-    bars = ax.bar(x, y, color=color, edgecolor="#1f2a37")
-    ax.set_xticks(x)
-    ax.set_xticklabels(df[x_col].tolist(), rotation=20, ha="right")
-    ax.set_title(title)
-    for b in bars:
-        h = b.get_height()
-        ax.text(b.get_x() + b.get_width() / 2.0, h + max(0.005, h * 0.01), f"{h:.4f}", ha="center", va="bottom", fontsize=9)
-    fig.tight_layout()
-    fig.savefig(out_path, dpi=300, bbox_inches="tight")
-    plt.close(fig)
-
-
-def _sample_cases(query_texts: List[str], reply_texts: List[str], n: int = SAMPLE_COUNT) -> List[Tuple[str, str]]:
-    total = min(len(query_texts), len(reply_texts))
-    k = min(max(int(n), 1), total)
-    rng = np.random.default_rng(2026)
-    idx = rng.choice(total, size=k, replace=False)
-    return [(str(query_texts[i]), str(reply_texts[i])) for i in idx.tolist()]
-
-
-def _local_semantic_score(engine: Any, text_a: str, text_b: str) -> float:
-    """本地语义评分: 余弦相似度线性映射到 0~1。"""
-    va = _to_np_float32(engine.encode_one(str(text_a), encoder="query"))
-    vb = _to_np_float32(engine.encode_one(str(text_b), encoder="query"))
-    denom = float(np.linalg.norm(va) * np.linalg.norm(vb) + EPS)
-    cos = float(np.dot(va, vb) / denom)
-    return float(max(0.0, min(1.0, (cos + 1.0) / 2.0)))
-
-
-def _judge_pairs(pairs: List[Tuple[str, str]], engine: Any) -> Dict[Tuple[str, str], float]:
-    cache: Dict[Tuple[str, str], float] = {}
-    uniq = list(dict.fromkeys(pairs))
-    for a, b in tqdm(uniq, total=len(uniq), desc="本地评审", unit="对", leave=False):
-        cache[(a, b)] = _local_semantic_score(engine, a, b)
-    return cache
-
-
-def _reconstruct_chunk(index: Any, start: int, size: int) -> np.ndarray:
-    """按块重建 FAISS 向量，优先使用 reconstruct_n。"""
-    if size <= 0:
-        return np.empty((0, 0), dtype=np.float32)
-
-    if hasattr(index, "reconstruct_n"):
-        try:
-            return np.asarray(index.reconstruct_n(start, size), dtype=np.float32)
-        except Exception:
-            pass
-
-    rows = [np.asarray(index.reconstruct(start + offset), dtype=np.float32) for offset in range(size)]  # type: ignore
-    return np.vstack(rows) if rows else np.empty((0, 0), dtype=np.float32)
-
-
-def _encode_query_batch(engine: SimCSEModelEngine, texts: List[str]) -> np.ndarray:
-    """批量编码用户输入，返回 float32 矩阵。"""
-    encoded = engine.encode(texts, encoder="query", batch_size=128, show_progress=False, return_numpy=True)
-    return np.asarray(encoded, dtype=np.float32)
-
-
-def _exact_full_scan_best_replies(
-    query_vectors: np.ndarray,
-    query_index: Any,
+def _sample_corpus(
+    query_texts: List[str],
     reply_texts: List[str],
-    response_index: Any = None,
-    rerank_weights: Tuple[float, float] = (1.0, 0.0),
-    chunk_size: int = FULL_SCAN_CHUNK_SIZE,
-) -> List[str]:
-    """对全量数据库做精确扫描，返回每个输入的最佳答句。"""
-    if query_vectors.size == 0:
-        return []
+    corpus_size: int,
+    seed: int = 2026,
+) -> Tuple[List[str], List[str]]:
+    """从全量语料中随机采样指定数量的子集。"""
+    total = min(len(query_texts), len(reply_texts))
+    k = min(corpus_size, total)
+    rng = np.random.default_rng(seed)
+    idx = sorted(rng.choice(total, size=k, replace=False).tolist())
+    return [query_texts[i] for i in idx], [reply_texts[i] for i in idx]
 
+
+def _full_cosine_search(
+    query_vectors: np.ndarray,
+    corpus_query_vectors: np.ndarray,
+    corpus_reply_vectors: np.ndarray,
+    corpus_replies: List[str],
+    query_weight: float = 1.0,
+    reply_weight: float = 0.0,
+) -> Tuple[List[str], float]:
+    """
+    全量余弦搜索。
+
+    当 reply_weight=0 时是纯问句余弦搜索（算法A），
+    当 reply_weight>0 时是问答加权搜索（算法B）。
+
+    返回: (各用例的匹配答句列表, 总耗时ms)
+    """
+    t0 = time.perf_counter()
     q_mat = np.asarray(query_vectors, dtype=np.float32)
+    cq_mat = np.asarray(corpus_query_vectors, dtype=np.float32)
+    cr_mat = np.asarray(corpus_reply_vectors, dtype=np.float32)
+
     q_norms = np.linalg.norm(q_mat, axis=1) + EPS
-    total = int(getattr(query_index, "ntotal", 0))
-    if total <= 0:
-        return [""] * int(q_mat.shape[0])
+    cq_norms = np.linalg.norm(cq_mat, axis=1) + EPS
+    cr_norms = np.linalg.norm(cr_mat, axis=1) + EPS
 
     best_scores = np.full((q_mat.shape[0],), -1e9, dtype=np.float32)
     best_ids = np.full((q_mat.shape[0],), -1, dtype=np.int64)
 
-    query_weight = float(rerank_weights[0])
-    reply_weight = float(rerank_weights[1])
+    # 分块扫描避免内存溢出
+    for start in range(0, cq_mat.shape[0], CHUNK_SIZE):
+        end = min(start + CHUNK_SIZE, cq_mat.shape[0])
+        q_chunk = cq_mat[start:end]
+        r_chunk = cr_mat[start:end]
+        qc_norms = cq_norms[start:end]
+        rc_norms = cr_norms[start:end]
 
-    for start in tqdm(range(0, total, chunk_size), total=(total + chunk_size - 1) // chunk_size, desc="全量扫描", unit="块", leave=False):
-        size = min(chunk_size, total - start)
-        query_chunk = _reconstruct_chunk(query_index, start, size)
-        if query_chunk.size == 0:
-            continue
+        q_scores = (q_mat @ q_chunk.T) / (q_norms[:, None] * qc_norms[None, :])
+        scores = query_weight * q_scores
 
-        chunk_query_norms = np.linalg.norm(query_chunk, axis=1) + EPS
-        query_scores = (q_mat @ query_chunk.T) / (q_norms[:, None] * chunk_query_norms[None, :])
-        final_scores = query_weight * query_scores
+        if reply_weight > 0.0:
+            r_scores = (q_mat @ r_chunk.T) / (q_norms[:, None] * rc_norms[None, :])
+            scores = scores + reply_weight * r_scores
 
-        if response_index is not None and reply_weight > 0.0:
-            response_chunk = _reconstruct_chunk(response_index, start, size)
-            chunk_resp_norms = np.linalg.norm(response_chunk, axis=1) + EPS
-            reply_scores = (q_mat @ response_chunk.T) / (q_norms[:, None] * chunk_resp_norms[None, :])
-            final_scores = final_scores + reply_weight * reply_scores
+        chunk_best = np.argmax(scores, axis=1)
+        chunk_scores = scores[np.arange(scores.shape[0]), chunk_best]
+        update = chunk_scores > best_scores
+        best_scores[update] = chunk_scores[update]
+        best_ids[update] = start + chunk_best[update]
 
-        chunk_best_pos = np.argmax(final_scores, axis=1)
-        chunk_best_scores = final_scores[np.arange(final_scores.shape[0]), chunk_best_pos]
-        update_mask = chunk_best_scores > best_scores
-        best_scores[update_mask] = chunk_best_scores[update_mask]
-        best_ids[update_mask] = start + chunk_best_pos[update_mask]
+    elapsed_ms = (time.perf_counter() - t0) * 1000.0
+    replies = [corpus_replies[int(i)] if 0 <= int(i) < len(corpus_replies) else "" for i in best_ids]
+    return replies, elapsed_ms
 
+
+def _faiss_rerank_search(
+    comparator: DialogComparator,
+    queries: List[str],
+    reply_texts: List[str],
+) -> Tuple[List[str], float]:
+    """
+    FAISS 精排检索（算法C）。
+
+    使用系统的 DialogComparator，流程为:
+    FAISS HNSW 索引粗召回 → 问问/问答加权重排 → 返回最优答句
+    """
+    t0 = time.perf_counter()
     replies: List[str] = []
-    for idx in best_ids.tolist():
-        replies.append(reply_texts[idx] if 0 <= int(idx) < len(reply_texts) else "")
-    return replies
-
-
-def _print_comparison_summary(df: Any) -> None:
-    """输出对比摘要，便于报告直接引用。"""
-    row_map = {str(r["算法"]): r for _, r in df.iterrows()}
-    comp = row_map.get("本地比较器")
-    direct = row_map.get("全量问句余弦")
-    weighted = row_map.get("全量问答加权")
-    if comp is None or direct is None or weighted is None:
-        return
-
-    comp_acc = float(comp["平均准确性"])
-    comp_ms = float(comp["平均耗时ms"])
-    direct_acc = float(direct["平均准确性"])
-    direct_ms = float(direct["平均耗时ms"])
-    weighted_acc = float(weighted["平均准确性"])
-    weighted_ms = float(weighted["平均耗时ms"])
-
-    comp_raw_ms = float(comp.get("实测平均耗时ms", comp_ms))
-    direct_raw_ms = float(direct.get("实测平均耗时ms", direct_ms))
-    weighted_raw_ms = float(weighted.get("实测平均耗时ms", weighted_ms))
-    est_scale = float(comp.get("倍率（0.2778x500）", 1.0))
-
-    speed_gain_vs_direct = (direct_ms - comp_ms) / max(direct_ms, EPS)
-    acc_gap_vs_direct = abs(comp_acc - direct_acc)
-    acc_gap_vs_weighted = abs(comp_acc - weighted_acc)
-    speed_gap_vs_weighted = abs(comp_ms - weighted_ms) / max(weighted_ms, EPS)
-
-    print("\n===== 评测摘要 =====")
-    print(
-        f"对比全量问句余弦: 本地比较器平均耗时 {comp_ms:.4f} ms, 全量问句余弦 {direct_ms:.4f} ms, "
-        f"速度提升 {speed_gain_vs_direct * 100:.2f}%, 准确性差距 {acc_gap_vs_direct:.4f}"
-    )
-    print(
-        f"对比全量问答加权: 本地比较器平均准确性 {comp_acc:.4f}, 全量问答加权 {weighted_acc:.4f}, "
-        f"准确性差距 {acc_gap_vs_weighted:.4f}, 速度差距 {speed_gap_vs_weighted * 100:.2f}%"
-    )
-    print(
-        f"实测耗时(当前库规模): 本地 {comp_raw_ms:.4f} ms, 全量问句余弦 {direct_raw_ms:.4f} ms, "
-        f"全量问答加权 {weighted_raw_ms:.4f} ms"
-    )
-    print(f"全量算法倍率: {est_scale:.4f}x (0.2778 x 500)")
-
-
-def _estimate_fullscan_time_ms(base_ms: float, factor: float = FIXED_FULLSCAN_EST_FACTOR) -> float:
-    """按固定倍率计算全量策略耗时: 输出值 = 当前实测耗时 x (0.2778 x 500)。"""
-    return float(base_ms) * float(max(factor, 0.0))
+    for q in queries:
+        result = comparator.compare(q, history=[], top_k=RERANK_TOP_K)
+        replies.append(str(result[0]))
+    elapsed_ms = (time.perf_counter() - t0) * 1000.0
+    return replies, elapsed_ms
 
 
 def run_eval() -> None:
@@ -234,112 +157,161 @@ def run_eval() -> None:
     out_dir = os.path.join(TEST_RESULTS_DIR, "eval02_retrieval_algo_db")
     os.makedirs(out_dir, exist_ok=True)
 
-    plt.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei", "Arial Unicode MS", "DejaVu Sans"]
+    plt.rcParams["font.sans-serif"] = [
+        "Microsoft YaHei", "SimHei", "Arial Unicode MS", "DejaVu Sans"
+    ]
     plt.rcParams["axes.unicode_minus"] = False
 
-    # 检索必须与现有索引维度一致，继续使用系统双塔编码器。
-    retrieval_engine = SimCSEModelEngine()
-    # 评审准确性分数时，显式使用本地 MiniLM 模型。
-    if not os.path.isdir(LOCAL_EVAL_MODEL_DIR):
-        raise RuntimeError(f"本地评估模型不存在: {LOCAL_EVAL_MODEL_DIR}")
-    judge_engine = HFQueryAdapter(
-        model_path=LOCAL_EVAL_MODEL_DIR,
-        device=("cuda" if torch.cuda.is_available() else "cpu"),
-    )
+    # 加载测试用例
+    if not os.path.exists(EVAL_PAIRS_CSV):
+        raise FileNotFoundError(f"测试用例文件不存在: {EVAL_PAIRS_CSV}")
+    eval_df = pd.read_csv(EVAL_PAIRS_CSV)
+    eval_queries = eval_df["query"].astype(str).tolist()
+    eval_expected = eval_df["response"].astype(str).tolist()
 
+    print(f"加载测试用例: {len(eval_queries)} 对")
+
+    # 加载全量语料库
+    engine = SimCSEModelEngine()
     query_index, response_index, query_texts, reply_texts = load_database_columns(prefix=DB_PREFIX)
-    est_scale = float(FIXED_FULLSCAN_EST_FACTOR)
-    comparator = DialogComparator(
-        model_engine=retrieval_engine,
-        query_index=query_index,
-        response_index=response_index,
-        doc_texts=[],
-        query_texts=query_texts,
-        reply_texts=reply_texts,
-        similarity_threshold=0.0,
-        context_matching_enabled=False,
+    print(f"全量语料库规模: {len(query_texts)} 条")
+
+    # ============================================================
+    # 准备：一次性编码所有测试问句（节省重复编码）
+    # ============================================================
+    eval_query_vectors = np.asarray(
+        engine.encode(eval_queries, encoder="query", batch_size=BATCH_SIZE, show_progress=False, return_numpy=True),
+        dtype=np.float32,
     )
 
-    cases = _sample_cases(query_texts, reply_texts, SAMPLE_COUNT)
-    sampled_queries = [q for q, _ in cases]
+    # ============================================================
+    # 逐规模评测
+    # ============================================================
+    time_records: List[Dict[str, Any]] = []
+    cases_records: Dict[int, pd.DataFrame] = {}
 
-    alg_names = ["本地比较器", "全量问句余弦", "全量问答加权"]
-    detail: Dict[str, List[Tuple[str, float]]] = {k: [] for k in alg_names}
+    for size in tqdm(CORPUS_SIZES, desc="数据规模梯度评测", unit="规模"):
+        # 构建当前规模的语料子集
+        sub_queries, sub_replies = _sample_corpus(query_texts, reply_texts, size)
+        sub_query_vectors = np.asarray(
+            engine.encode(sub_queries, encoder="query", batch_size=BATCH_SIZE, show_progress=False, return_numpy=True),
+            dtype=np.float32,
+        )
+        sub_reply_vectors = np.asarray(
+            engine.encode(sub_replies, encoder="response", batch_size=BATCH_SIZE, show_progress=False, return_numpy=True),
+            dtype=np.float32,
+        )
 
-    # 策略1：本地比较器，关闭上下文与 AI，仅返回匹配答句。
-    for q, _ in tqdm(cases, total=len(cases), desc="本地比较器评测", unit="条"):
-        t0 = time.perf_counter()
-        sys_reply = str(comparator.compare(q, history=[], top_k=COMPARATOR_TOP_K)[0])
-        detail["本地比较器"].append((sys_reply, (time.perf_counter() - t0) * 1000.0))
+        # 算法A: 全量问句余弦
+        a_replies, a_ms = _full_cosine_search(
+            eval_query_vectors, sub_query_vectors, sub_reply_vectors,
+            sub_replies, query_weight=1.0, reply_weight=0.0,
+        )
 
-    # 为全量策略统一批量编码用户输入，并把总耗时均摊为单条平均时间。
-    t1 = time.perf_counter()
-    sampled_query_vectors = _encode_query_batch(retrieval_engine, sampled_queries)
-    direct_replies = _exact_full_scan_best_replies(
-        query_vectors=sampled_query_vectors,
-        query_index=query_index,
-        reply_texts=reply_texts,
-        response_index=None,
-        rerank_weights=(1.0, 0.0),
-    )
-    direct_avg_ms_measured = ((time.perf_counter() - t1) * 1000.0) / max(len(sampled_queries), 1)
-    direct_avg_ms = _estimate_fullscan_time_ms(
-        base_ms=direct_avg_ms_measured,
-        factor=est_scale,
-    )
-    detail["全量问句余弦"] = [(reply, direct_avg_ms) for reply in direct_replies]
+        # 算法B: 全量问答加权
+        b_replies, b_ms = _full_cosine_search(
+            eval_query_vectors, sub_query_vectors, sub_reply_vectors,
+            sub_replies, query_weight=0.75, reply_weight=0.25,
+        )
 
-    t2 = time.perf_counter()
-    sampled_query_vectors = _encode_query_batch(retrieval_engine, sampled_queries)
-    weighted_replies = _exact_full_scan_best_replies(
-        query_vectors=sampled_query_vectors,
-        query_index=query_index,
-        response_index=response_index,
-        reply_texts=reply_texts,
-        rerank_weights=(float(comparator.rerank_weights[0]), float(comparator.rerank_weights[1])),
-    )
-    weighted_avg_ms_measured = ((time.perf_counter() - t2) * 1000.0) / max(len(sampled_queries), 1)
-    weighted_avg_ms = _estimate_fullscan_time_ms(
-        base_ms=weighted_avg_ms_measured,
-        factor=est_scale,
-    )
-    detail["全量问答加权"] = [(reply, weighted_avg_ms) for reply in weighted_replies]
+        # 算法C: FAISS精排（仅全量规模有索引）
+        if size == CORPUS_SIZES[-1]:
+            comparator = DialogComparator(
+                model_engine=engine,
+                query_index=query_index,
+                response_index=response_index,
+                doc_texts=[],
+                query_texts=query_texts,
+                reply_texts=reply_texts,
+                similarity_threshold=0.0,
+                context_matching_enabled=False,
+                rerank_top_k=RERANK_TOP_K,
+            )
+            c_replies, c_ms = _faiss_rerank_search(comparator, eval_queries, reply_texts)
+        else:
+            c_replies = [""] * len(eval_queries)
+            c_ms = 0.0
 
-    measured_time_map = {
-        "本地比较器": float(np.mean(np.asarray([ms for _, ms in detail["本地比较器"]], dtype=np.float64))),
-        "全量问句余弦": float(direct_avg_ms_measured),
-        "全量问答加权": float(weighted_avg_ms_measured),
-    }
-
-    rows: List[Dict[str, object]] = []
-    for alg in alg_names:
-        pred_gt_pairs = [(pred, gt) for (pred, _), (_, gt) in zip(detail[alg], cases)]
-        score_map = _judge_pairs(pred_gt_pairs, engine=judge_engine)
-        sims = [score_map[(pred, gt)] for pred, gt in pred_gt_pairs]
-        times = [ms for _, ms in detail[alg]]
-        rows.append(
+        # 记录时间
+        time_records.append(
             {
-                "算法": alg,
-                "平均准确性": float(np.mean(np.asarray(sims, dtype=np.float64))) if sims else 0.0,
-                "平均耗时ms": float(np.mean(np.asarray(times, dtype=np.float64))) if times else 0.0,
-                "实测平均耗时ms": float(measured_time_map.get(alg, 0.0)),
-                "倍率（0.2778x500）": float(est_scale),
+                "数据规模": size,
+                "全量问句余弦(ms)": round(a_ms / max(len(eval_queries), 1), 2),
+                "全量问答加权(ms)": round(b_ms / max(len(eval_queries), 1), 2),
+                "FAISS精排(ms)": round(c_ms / max(len(eval_queries), 1), 2) if c_ms > 0 else 0,
             }
         )
 
-    import pandas as pd
+        # 保存用例级对比（仅最大规模输出详表）
+        if size == CORPUS_SIZES[-1]:
+            cases_df = pd.DataFrame(
+                {
+                    "序号": range(1, len(eval_queries) + 1),
+                    "输入问句": eval_queries,
+                    "预期答句": eval_expected,
+                    "算法A_全量余弦": a_replies,
+                    "算法B_问答加权": b_replies,
+                    "算法C_FAISS精排": c_replies,
+                }
+            )
+            cases_df.to_csv(
+                os.path.join(out_dir, "eval02_cases_table.csv"),
+                index=False,
+                encoding="utf-8-sig",
+            )
 
-    df = pd.DataFrame(rows)
-    _print_comparison_summary(df)
-    _bar_plot(df.sort_values("平均准确性", ascending=False), "算法", "平均准确性", "准确性对比(本地语义评分)", os.path.join(out_dir, "accuracy_compare.png"), "#2a9d8f")
-    _bar_plot(
-        df.sort_values("平均耗时ms", ascending=True),
-        "算法",
-        "平均耗时ms",
-        "反应时间对比(平均耗时ms)",
-        os.path.join(out_dir, "speed_compare.png"),
-        "#3b82f6",
+    # ============================================================
+    # 输出时间表格
+    # ============================================================
+    time_df = pd.DataFrame(time_records)
+    time_df.to_csv(
+        os.path.join(out_dir, "eval02_time_gradient.csv"),
+        index=False,
+        encoding="utf-8-sig",
     )
+
+    print("\n===== 不同数据规模下各算法的平均每句耗时 (ms) =====")
+    print(time_df.to_string(index=False))
+
+    # ============================================================
+    # 图表: 时间增长梯度折线图
+    # ============================================================
+    fig, ax = plt.subplots(figsize=(9, 5.5))
+    sizes = time_df["数据规模"].values
+    for col, color, label in [
+        ("全量问句余弦(ms)", "#ef4444", "全量问句余弦"),
+        ("全量问答加权(ms)", "#f59e0b", "全量问答加权"),
+        ("FAISS精排(ms)", "#2a9d8f", "FAISS精排"),
+    ]:
+        vals = time_df[col].values
+        ax.plot(sizes.astype(str), vals, marker="o", color=color, label=label, linewidth=2)
+    ax.set_xlabel("语料库规模（条）")
+    ax.set_ylabel("平均每句耗时（ms）")
+    ax.set_title("检索算法时间增长梯度对比")
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(os.path.join(out_dir, "time_gradient.png"), dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+    # 柱状图: 全量规模下三算法耗时对比
+    last_row = time_df[time_df["数据规模"] == CORPUS_SIZES[-1]]
+    if not last_row.empty:
+        fig2, ax2 = plt.subplots(figsize=(8, 5))
+        alg_names = ["全量问句余弦", "全量问答加权", "FAISS精排"]
+        alg_cols = ["全量问句余弦(ms)", "全量问答加权(ms)", "FAISS精排(ms)"]
+        alg_vals = [float(last_row[c].iloc[0]) for c in alg_cols]
+        colors = ["#ef4444", "#f59e0b", "#2a9d8f"]
+        bars = ax2.bar(alg_names, alg_vals, color=colors, edgecolor="#1f2a37")
+        ax2.set_ylabel("平均每句耗时（ms）")
+        ax2.set_title(f"全量规模 ({CORPUS_SIZES[-1]} 条) 下三种算法耗时对比")
+        for b, v in zip(bars, alg_vals):
+            ax2.text(b.get_x() + b.get_width() / 2, b.get_height() + 1, f"{v:.2f}", ha="center", fontsize=10)
+        fig2.tight_layout()
+        fig2.savefig(os.path.join(out_dir, "speed_compare.png"), dpi=300, bbox_inches="tight")
+        plt.close(fig2)
+
+    print(f"\n评测完成，结果保存至: {out_dir}")
 
 
 if __name__ == "__main__":
