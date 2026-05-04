@@ -7,7 +7,7 @@ system/bootstrap.py
 """
 
 import os
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 import faiss
 import pandas as pd

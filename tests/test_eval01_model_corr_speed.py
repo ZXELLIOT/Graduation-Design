@@ -226,12 +226,17 @@ def _infer_task_type(dataset_name: str, labels: np.ndarray) -> str:
     自动推断数据集任务类型。
 
     规则:
-        - 名称含 stsb/sts-b → regression（0-5 打分）
+        - 名称含 sts/nli/snli/cmnli/ocnli → regression（语义评分）
         - 标签仅含 0 和 1 → classification（0/1 二分类）
         - 其他 → regression
+
+    说明:
+        NLI 数据集（CMNLI/OCNLI/SNLI-ZH）原本是分类任务，
+        但映射为语义相似度分数后用于 Spearman 评估，
+        这在中文嵌入模型评测中是常见做法。
     """
     ds = dataset_name.lower()
-    if "stsb" in ds or "sts-b" in ds:
+    if any(kw in ds for kw in ("sts", "nli", "snli")):
         return "regression"
 
     uniq = np.unique(np.round(labels, 6))

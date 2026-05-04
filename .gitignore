@@ -42,5 +42,6 @@ data_prep/LCCC-small/
 db/data/
 tests/data/*
 tests/results/
-# 保留评测模块的测试用例文件
+# 保留评测模块的测试用例和标准数据集
 !tests/data/eval_pairs.csv
+!tests/data/*_test.txt
