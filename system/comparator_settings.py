@@ -18,7 +18,7 @@ from system.config import (
     AI_ENHANCE_TIMEOUT_SEC,
     AI_ENHANCE_TOPK,
 )
-from system.runtime_settings import runtime_ai_settings
+from system.runtime_settings import runtime_ai_settings, apply_ai_runtime_settings
 
 
 def comparator_settings_payload(comparator: DialogComparator) -> Dict[str, Any]:
