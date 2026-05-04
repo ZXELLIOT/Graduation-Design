@@ -1,5 +1,5 @@
 """
-db/config.py
+db/db_config.py
 
 文件作用:
     数据库构建模块配置。
