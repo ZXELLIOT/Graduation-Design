@@ -25,7 +25,7 @@ tests/test_eval03_baselines_with_system.py
 import os
 import sys
 import time
-from typing import Any, Dict, List, Tuple
+from typing import Dict, List, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -181,6 +181,7 @@ def run_eval() -> None:
 
     # --- 基准模型 ---
     baselines = {
+        "基准_bge-small": "bge-small-zh-v1.5",
         "基准_text2vec": "text2vec-base-chinese",
         "基准_bert": "bert-base-chinese",
         "基准_roberta": "chinese-roberta-wwm-ext",

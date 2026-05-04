@@ -479,6 +479,7 @@ def run_eval() -> None:
     # 评测 2: 基准模型
     # ============================================================
     baseline_map = {
+        "BGE-small-zh": "bge-small-zh-v1.5",
         "text2vec": "text2vec-base-chinese",
         "bert": "bert-base-chinese",
         "roberta": "chinese-roberta-wwm-ext",

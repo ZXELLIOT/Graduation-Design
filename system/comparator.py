@@ -88,7 +88,6 @@ class DialogComparator:
             self.query_texts = [str(item.get("query", "") or "") for item in self.doc_texts]
             self.reply_texts = [str(item.get("reply", "") or "") for item in self.doc_texts]
         self.doc_count = min(len(self.query_texts), len(self.reply_texts))
-        self.queries: List[str] = self.query_texts
         self.fast_candidate_multiplier = 50
         self.fast_candidate_min = 200
         # 显式粗召回数量：0 表示启用自适应计算（兼容旧逻辑）。
@@ -127,7 +126,7 @@ class DialogComparator:
         )
 
         # 轻量查询向量缓存：减少短时间内重复文本的重复编码开销。
-        self._query_vec_cache: "OrderedDict[str, np.ndarray]" = OrderedDict()
+        self._query_vec_cache: OrderedDict[str, np.ndarray] = OrderedDict()
         self._query_vec_cache_max_size = 1024
 
     def _normalize_rerank_weights(self, rerank_weights: Tuple[float, float]) -> Tuple[float, float]:
@@ -397,15 +396,6 @@ class DialogComparator:
         context_meta["current_query"] = current
         context_meta["context_used"] = [x for x in recent_contexts if x and x in contextual_query and x != current]
         return contextual_query, context_meta
-
-    def _build_contextual_query(self, current_text: str, history: Optional[List[Any]]) -> str:
-        """构造上下文查询：最近 3 轮用户文本 + 当前输入。"""
-        contextual_query, _ = self.build_contextual_query_with_meta(current_text=current_text, history=history)
-        return contextual_query
-
-    def _need_context_match(self, current_text: str, recent_contexts: Optional[List[str]] = None) -> bool:
-        """使用多信号判定是否启用上下文匹配。"""
-        return bool(self._evaluate_context_need(current_text, recent_contexts).get("enabled", False))
 
     def _step12_prepare_query(
         self,

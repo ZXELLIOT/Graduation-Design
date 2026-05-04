@@ -40,7 +40,7 @@ import pandas as pd
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.amp.grad_scaler import GradScaler
+from torch.amp import GradScaler
 from torch.optim import AdamW
 from torch.utils.data import DataLoader, Dataset
 from tqdm.auto import tqdm

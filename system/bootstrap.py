@@ -92,23 +92,6 @@ def validate_database() -> Tuple[bool, str]:
     return True, "数据库文件可读。"
 
 
-def load_database_assets(prefix: str) -> Tuple[Any, Any, List[Dict[str, Any]]]:
-    """加载数据库索引与文本映射。"""
-    query_index, response_index, csv_queries, csv_replies = load_database_columns(prefix=prefix)
-    pair_count = min(len(csv_queries), len(csv_replies))
-
-    doc_texts: List[Dict[str, Any]] = []
-    for idx in range(pair_count):
-        doc_texts.append(
-            {
-                "query": csv_queries[idx],
-                "reply": csv_replies[idx],
-                "query_idx": idx,
-                "reply_idx": idx,
-                "csv_idx": idx,
-            }
-        )
-    return query_index, response_index, doc_texts
 
 
 def load_database_columns(prefix: str) -> Tuple[Any, Any, List[str], List[str]]:
@@ -191,6 +174,5 @@ def get_dialog_comparator() -> DialogComparator:
     return _dialog_comparator_instance
 
 
-def get_dialog_matcher() -> DialogComparator:
-    """兼容旧命名，内部统一转发到 get_dialog_comparator。"""
-    return get_dialog_comparator()
+
+
