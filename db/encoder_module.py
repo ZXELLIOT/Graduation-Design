@@ -30,7 +30,7 @@ if SYSTEM_DIR not in sys.path:
     sys.path.insert(0, SYSTEM_DIR)
 
 from system.model_engine import SimCSEModelEngine
-from db.config import DB_CSV_PATH, DB_BUILD_BASE_PATH
+from db.db_config import DB_CSV_PATH, DB_BUILD_BASE_PATH
 
 # 默认向量维度（bert-base-chinese / text2vec-base-chinese 均为 768）
 # 若更换为其他预训练模型（如 1024 维），只需修改此处即可
