@@ -36,7 +36,7 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 from system.ai_enhancer import generate_ai_enhanced_reply
-from system.bootstrap import load_database_columns
+from system.bootstrap import load_faiss_index, load_text_store
 from system.comparator import DialogComparator
 from system.config import (
     AI_ENHANCE_API_KEY,
@@ -162,7 +162,9 @@ def run_eval() -> None:
 
     # 初始化系统
     engine = SimCSEModelEngine()
-    query_index, response_index, text_store = load_database_columns()
+    query_index = load_faiss_index()
+    response_index = None
+    text_store = load_text_store(max_rows=int(getattr(query_index, "ntotal", 0)))
     query_texts = [text_store.get_query(i) for i in range(len(text_store))]
     reply_texts = [text_store.get_response(i) for i in range(len(text_store))]
     comparator = DialogComparator(

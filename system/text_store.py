@@ -7,31 +7,53 @@ system/text_store.py
 """
 
 import os
-import csv
 from typing import List, Optional
+
+from tqdm.auto import tqdm
 
 
 class TextStore:
     """轻量文本存储：记录每行的文件偏移量，按需读取。"""
 
-    def __init__(self, csv_path: str):
+    def __init__(self, csv_path: str, max_rows: Optional[int] = None, show_progress: bool = False):
         self.csv_path = csv_path
-        self.offsets: List[int] = []  # 每行在文件中的起始字节位置
-        self._build_index()
+        self.offsets: List[int] = []
+        self._build_index(max_rows, show_progress)
 
-    def _build_index(self):
-        """扫描 CSV，记录每行文件偏移量。"""
+    def _build_index(self, max_rows: Optional[int] = None, show_progress: bool = False):
+        """扫描 CSV，记录每行文件偏移量（最多 max_rows 行）。"""
         if not os.path.exists(self.csv_path):
             return
-        with open(self.csv_path, "rb") as f:
-            # 跳过表头
-            header = f.readline()
-            while True:
-                offset = f.tell()
-                line = f.readline()
-                if not line:
-                    break
-                self.offsets.append(offset)
+
+        pbar = None
+        if show_progress and max_rows:
+            pbar = tqdm(
+                total=max_rows, desc="CSV语料索引", unit="行",
+                dynamic_ncols=True, leave=True,
+            )
+
+        try:
+            with open(self.csv_path, "rb") as f:
+                # 跳过表头
+                f.readline()
+                batch = 0
+                while True:
+                    if max_rows is not None and len(self.offsets) >= max_rows:
+                        break
+                    offset = f.tell()
+                    line = f.readline()
+                    if not line:
+                        break
+                    self.offsets.append(offset)
+                    batch += 1
+                    if pbar and batch >= 1000:
+                        pbar.update(batch)
+                        batch = 0
+                if pbar and batch > 0:
+                    pbar.update(batch)
+        finally:
+            if pbar:
+                pbar.close()
 
     def __len__(self) -> int:
         return len(self.offsets)
@@ -49,7 +71,6 @@ class TextStore:
         row = self.get_row(idx)
         if row is None:
             return ""
-        # CSV 格式: query,response
         parts = row.split(",", 1)
         return parts[0].strip() if parts else ""
 

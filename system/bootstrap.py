@@ -11,6 +11,7 @@ from typing import Any, List, Optional, Tuple
 
 import faiss
 import pandas as pd
+from tqdm.auto import tqdm
 
 from system.comparator import DialogComparator
 from system.model_engine import SimCSEModelEngine
@@ -51,10 +52,8 @@ def _read_faiss_index_safely(index_path: str) -> Any:
         try:
             return faiss.read_index(index_path, io_flags)
         except TypeError:
-            # 低版本绑定可能不支持第二个参数，继续回退。
             pass
         except Exception:
-            # 内存映射失败时回退常规读取。
             pass
 
     return faiss.read_index(index_path)
@@ -68,18 +67,9 @@ def check_kb_exists() -> Tuple[bool, List[str]]:
 
 
 def validate_database() -> Tuple[bool, str]:
-    """快速校验数据库文件可读取。
-
-    说明:
-    1. 冷启动阶段避免再次完整解析 FAISS 大索引（初始化时还会真正加载一次），
-       否则会产生重复 I/O 和明显启动延迟。
-    2. 这里只做“可读性 + 基础结构”检查，确保主流程尽快启动。
-    """
+    """快速校验数据库文件可读取。"""
     try:
-        # CSV: 检查列结构，仅读取首行即可。
         pd.read_csv(DB_CSV_PATH, usecols=["query", "response"], nrows=1)
-
-        # FAISS 索引: 只做快速可读性检查，不做完整反序列化。
         with open(DB_QUERY_INDEX_FILE, "rb") as f:
             head = f.read(16)
             if not head:
@@ -89,14 +79,24 @@ def validate_database() -> Tuple[bool, str]:
     return True, "数据库文件可读。"
 
 
+def load_faiss_index() -> Any:
+    """加载 FAISS 问句索引（独立步骤，带进度反馈）。"""
+    index_path = DB_QUERY_INDEX_FILE
+    index_size_mb = os.path.getsize(index_path) / (1024 * 1024)
+
+    with tqdm(total=1, desc="FAISS索引加载", unit="文件", dynamic_ncols=True, leave=True) as pbar:
+        pbar.set_postfix_str(f"{index_size_mb:.1f}MB")
+        query_index = _read_faiss_index_safely(index_path)
+        pbar.update(1)
+        ntotal = int(getattr(query_index, "ntotal", 0))
+        pbar.set_postfix_str(f"{ntotal:,} 条向量")
+
+    return query_index
 
 
-def load_database_columns() -> Tuple[Any, Any, TextStore]:
-    """加载问句索引与文本偏移索引。"""
-    query_index = _read_faiss_index_safely(DB_QUERY_INDEX_FILE)
-    response_index = None
-    text_store = TextStore(DB_CSV_PATH)
-    return query_index, response_index, text_store
+def load_text_store(max_rows: int) -> TextStore:
+    """加载 CSV 文本偏移索引（仅加载与 FAISS 索引对应的前 N 行，带进度条）。"""
+    return TextStore(DB_CSV_PATH, max_rows=max_rows, show_progress=True)
 
 
 def initialize_system() -> DialogComparator:
@@ -106,7 +106,7 @@ def initialize_system() -> DialogComparator:
     print("==========================================================\n")
 
     # 步骤1：运行依赖检查 — 确认 CSV 和 FAISS 索引文件存在且可读
-    print("[1/4] 检查数据文件...")
+    print("[1/5] 检查数据文件...")
     exists_ok, missing_files = check_kb_exists()
     if not exists_ok:
         msg = "未能找到数据库文件:\n" + "\n".join(missing_files)
@@ -117,15 +117,21 @@ def initialize_system() -> DialogComparator:
         raise RuntimeError(f"数据库异常: {validate_msg}")
 
     # 步骤2：加载双塔编码引擎 — query encoder + response encoder
-    print("[2/4] 加载语义模型...")
+    print("[2/5] 加载语义模型...")
     engine = SimCSEModelEngine()
 
-    # 步骤3：加载 FAISS 双索引与文本偏移索引
-    print("[3/4] 加载向量索引...")
-    query_index, response_index, text_store = load_database_columns()
+    # 步骤3：加载 FAISS 问句索引（带进度条）
+    print("[3/5] 加载向量索引...")
+    query_index = load_faiss_index()
 
-    # 步骤4：组装比较器 — 统一承载召回、重排、阈值与上下文策略
-    print("[4/4] 初始化匹配引擎...")
+    # 步骤4：加载 CSV 语料偏移索引（仅加载与索引条目数匹配的行，带进度条）
+    print("[4/5] 加载语料数据...")
+    total_pairs = int(getattr(query_index, "ntotal", 0))
+    text_store = load_text_store(max_rows=total_pairs)
+
+    # 步骤5：组装比较器 — 统一承载召回、重排、阈值与上下文策略
+    print("[5/5] 初始化匹配引擎...")
+    response_index = None
     comparator = DialogComparator(
         model_engine=engine,
         query_index=query_index,
@@ -142,8 +148,7 @@ def initialize_system() -> DialogComparator:
         context_matching_enabled=True,
     )
 
-    total_pairs = int(comparator.doc_count)
-    print(f"启动成功，知识库规模：{total_pairs} 条\n")
+    print(f"启动成功，知识库规模（索引）：{total_pairs} 条\n")
     return comparator
 
 

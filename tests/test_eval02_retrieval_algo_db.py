@@ -36,7 +36,7 @@ PROJECT_ROOT = os.path.dirname(CURRENT_DIR)
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from system.bootstrap import load_database_columns
+from system.bootstrap import load_faiss_index, load_text_store
 from system.comparator import DialogComparator
 
 from system.model_engine import SimCSEModelEngine
@@ -173,7 +173,9 @@ def run_eval() -> None:
 
     # 加载全量语料库
     engine = SimCSEModelEngine()
-    query_index, response_index, text_store = load_database_columns()
+    query_index = load_faiss_index()
+    response_index = None
+    text_store = load_text_store(max_rows=int(getattr(query_index, "ntotal", 0)))
     query_texts = [text_store.get_query(i) for i in range(len(text_store))]
     reply_texts = [text_store.get_response(i) for i in range(len(text_store))]
     print(f"全量语料库规模: {len(text_store)} 条")
