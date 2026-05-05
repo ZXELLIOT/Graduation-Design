@@ -16,7 +16,6 @@ from contextlib import nullcontext
 from system.config import SIMCSE_MODEL_DIR
 
 MAX_LENGTH = 128
-SENTENCE_POOLING = "cls"
 
 class SimCSEModelEngine:
     """
@@ -29,27 +28,13 @@ class SimCSEModelEngine:
         query_encoder:    编码用户输入的问句
         response_encoder: 编码知识库中的答句
 
-    池化策略:
-        cls:             取 [CLS] 位置向量（BERT 标准做法，单向量代表整句含义）
-        mean:            所有有效 token 向量的平均值（更平滑，减少特殊位置偏好）
-        first_last_avg:  融合首层和末层特征后平均（多粒度语义，适合短文本匹配）
-
     使用方式:
         - 批量编码: engine.encode(texts, encoder='query', batch_size=32)
         - 单条编码: engine.encode_one(text, encoder='query', return_numpy=True)
     """
 
-    def __init__(self, model_dir: str = SIMCSE_MODEL_DIR, pooling: str = SENTENCE_POOLING):
-        """
-        初始化模型引擎。
-        本类将同时加载问句编码器 (Query Encoder) 和答句编码器 (Response Encoder)。
-        
-        参数:
-            model_dir: 本地模型文件夹的路径。
-            pooling: 特征提取策略（默认 'cls'，即取 BERT 的首位特征，其具备全局代表性）。
-        """
+    def __init__(self, model_dir: str = SIMCSE_MODEL_DIR):
         self.model_dir = model_dir
-        self.pooling = pooling
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_dir, local_files_only=True)
         q_dir = os.path.join(self.model_dir, "query_encoder")
         r_dir = os.path.join(self.model_dir, "response_encoder")
@@ -130,41 +115,9 @@ class SimCSEModelEngine:
         summed = squared.sum() if dim is None else squared.sum(dim=dim, keepdim=keepdim)
         return torch.sqrt(summed)
 
-    def _masked_mean_pool(self, token_embeddings, attention_mask, eps=1e-8):
-        """
-        对所有字的特征进行加权平均。
-        在提取整句特征时，只考虑实际存在的字词，忽略占位填充部分。
-        """
-        mask = attention_mask.unsqueeze(-1).expand(token_embeddings.size()).float()
-        masked_embeddings = token_embeddings * mask
-        # 对序列长度维求和，得到每句“有效 token 特征和”
-        summed = torch.sum(masked_embeddings, dim=1)
-        # 统计每句有效 token 数，最小值截断到 eps 防止除零
-        counts = torch.clamp(mask.sum(dim=1), min=eps)
-        return summed / counts
-
-    def _sentence_pooling(self, outputs, attention_mask):
-        """
-        从模型输出中提取整句的特征向量。
-        
-        参数:
-            outputs: 模型的原始运算结果。
-            attention_mask: 用于标识有效字符位置的掩码。
-        """
-        if self.pooling == "cls":
-            # 取出序列第一个位置（通常代表整句含义）的特征
-            return outputs.last_hidden_state[:, 0]
-        if self.pooling == "mean":
-            # 对所有有效位置的特征求平均
-            return self._masked_mean_pool(outputs.last_hidden_state, attention_mask)
-        if self.pooling == "first_last_avg":
-            # 融合模型首层和末层的特征并求平均
-            hidden_states = outputs.hidden_states
-            first_hidden = hidden_states[1] if len(hidden_states) > 1 else hidden_states[0]
-            last_hidden = hidden_states[-1]
-            avg_hidden = 0.5 * (first_hidden + last_hidden)
-            return self._masked_mean_pool(avg_hidden, attention_mask)
-        raise ValueError(f"不支持的提取策略: {self.pooling}")
+    def _sentence_pooling(self, outputs):
+        """取出序列第一个位置（[CLS]）的特征向量作为整句语义表示。"""
+        return outputs.last_hidden_state[:, 0]
 
     @staticmethod
     def _batch_slices(total_size: int, batch_size: int):
@@ -253,12 +206,9 @@ class SimCSEModelEngine:
                 try:
                     for start, end in self._batch_slices(len(texts), batch_size):
                         batch_texts = texts[start:end]
-                        # 将文本切分为模型可理解的数字序列，并迁移到目标设备
                         inputs = self._prepare_inputs(batch_texts)
-                        # first_last_avg 池化需要中间层隐藏状态，其余策略不需要，
-                        need_hidden_states = self.pooling == "first_last_avg"
-                        outputs = model(**inputs, output_hidden_states=need_hidden_states)
-                        embeddings = self._sentence_pooling(outputs, inputs["attention_mask"])
+                        outputs = model(**inputs)
+                        embeddings = self._sentence_pooling(outputs)
                         if normalize:
                             embeddings = self._l2_normalize(embeddings)
                         all_embeddings.append(embeddings.cpu())
@@ -286,9 +236,8 @@ class SimCSEModelEngine:
             amp_ctx = torch.autocast(device_type="cuda", dtype=torch.float16) if self.use_amp else nullcontext()
             with amp_ctx:
                 inputs = self._prepare_inputs([safe_text])
-                need_hidden_states = self.pooling == "first_last_avg"
-                outputs = model(**inputs, output_hidden_states=need_hidden_states)
-                emb = self._sentence_pooling(outputs, inputs["attention_mask"])
+                outputs = model(**inputs)
+                emb = self._sentence_pooling(outputs)
                 if normalize:
                     emb = self._l2_normalize(emb)
 

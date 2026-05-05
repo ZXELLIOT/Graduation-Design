@@ -315,14 +315,11 @@ def run_eval() -> None:
     full_query_index = load_faiss_index()
     query_index = _build_small_query_index(full_query_index, CORPUS_SIZE)
     text_store = load_text_store(max_rows=int(getattr(query_index, "ntotal", 0)))
-    query_texts = [text_store.get_query(i) for i in range(len(text_store))]
-    reply_texts = [text_store.get_response(i) for i in range(len(text_store))]
     comparator = DialogComparator(
         model_engine=engine,
         query_index=query_index,
         doc_texts=[],
-        query_texts=query_texts,
-        reply_texts=reply_texts,
+        text_store=text_store,
         similarity_threshold=0.0,
         context_matching_enabled=False,
         rerank_top_k=RERANK_TOP_K,

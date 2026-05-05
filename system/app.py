@@ -73,8 +73,6 @@ class ComparatorSettingsRequest(BaseModel):
     max_text_len: Optional[int] = None
     context_short_query_len: Optional[int] = None
     context_matching_enabled: Optional[bool] = None
-    context_overlap_threshold: Optional[float] = None
-    context_semantic_threshold: Optional[float] = None
     coarse_recall_count: Optional[int] = None
     rerank_top_k: Optional[int] = None
     ai_enhanced: Optional[bool] = None

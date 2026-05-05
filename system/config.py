@@ -39,7 +39,7 @@ DB_DATA_DIR = str(PROJECT_ROOT / "db" / "data")
 DB_CSV_PATH = str(Path(DB_DATA_DIR) / "system_data.csv")
 
 # 运行时加载上限：系统启动时仅加载前 N 条（索引与CSV文本都按该上限截断）
-DB_LOAD_MAX_ROWS = int(os.getenv("DB_LOAD_MAX_ROWS", "200000"))
+DB_LOAD_MAX_ROWS = int(os.getenv("DB_LOAD_MAX_ROWS", "2000000"))
 
 # FAISS 问句索引文件
 DB_QUERY_INDEX_FILE = str(Path(DB_DATA_DIR) / "querydata")
@@ -63,14 +63,6 @@ CONTEXT_MAX_TURNS = 3
 # 输入文本与上下文拼接结果的最大长度（字符数）
 MAX_TEXT_LEN = 64
 
-# 短问句长度阈值：低于此值的输入自动触发上下文拼接
-CONTEXT_SHORT_QUERY_LEN = 14
-
-# 词面重叠阈值（Jaccard 相似度）：超过此值触发上下文拼接
-CONTEXT_OVERLAP_THRESHOLD = 0.34
-
-# 语义相似阈值：当前输入与历史输入的语义相似度超过此值时触发上下文拼接
-CONTEXT_SEMANTIC_THRESHOLD = 0.58
 
 # ============================================================
 # AI 增强配置（默认关闭，需通过 .env 或前端面板开启）

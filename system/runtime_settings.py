@@ -12,24 +12,12 @@ from fastapi import HTTPException
 
 from system.config import (
     AI_ENHANCED_DEFAULT,
-    AI_ENHANCE_MODEL_NAME,
-    AI_ENHANCE_RESPONSES_URL,
     AI_ENHANCE_API_KEY,
 )
 
 runtime_ai_settings: Dict[str, Any] = {
     "enabled": bool(AI_ENHANCED_DEFAULT),
 }
-
-
-def build_ai_meta_payload() -> Dict[str, Any]:
-    """返回 AI 运行时状态与元信息。"""
-    return {
-        "ai_enhanced": bool(runtime_ai_settings.get("enabled", False)),
-        "ai_model_name": str(AI_ENHANCE_MODEL_NAME),
-        "ai_responses_url": str(AI_ENHANCE_RESPONSES_URL),
-        "ai_api_ready": bool(AI_ENHANCE_API_KEY),
-    }
 
 
 def apply_ai_runtime_settings(ai_enhanced: Any = None) -> None:

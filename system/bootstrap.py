@@ -12,7 +12,7 @@ import time
 from typing import Any, List, Optional, Tuple
 
 import faiss
-import numpy as np
+
 import pandas as pd
 from tqdm.auto import tqdm
 
@@ -27,9 +27,6 @@ from system.config import (
     RERANK_WEIGHTS,
     CONTEXT_MAX_TURNS,
     MAX_TEXT_LEN,
-    CONTEXT_SHORT_QUERY_LEN,
-    CONTEXT_OVERLAP_THRESHOLD,
-    CONTEXT_SEMANTIC_THRESHOLD,
 )
 
 # 全局单例对象，用于在多个请求间复用同一个比较器。
@@ -55,9 +52,7 @@ def _read_faiss_index_safely(index_path: str) -> Any:
     if io_flags != 0:
         try:
             return faiss.read_index(index_path, io_flags)
-        except TypeError:
-            pass
-        except Exception:
+        except (TypeError, RuntimeError, OSError, ValueError):
             pass
 
     return faiss.read_index(index_path)
@@ -129,42 +124,6 @@ def load_faiss_index() -> Any:
     return query_index
 
 
-def _build_small_query_index(full_index: Any, n_rows: int) -> Any:
-    """从全量索引重建前 n_rows 条向量，构建与文本加载上限对齐的小索引。"""
-    total = min(max(int(n_rows), 0), int(getattr(full_index, "ntotal", 0)))
-    if total <= 0:
-        raise RuntimeError("无法构建小索引：可用向量数量为0。")
-
-    dim = int(getattr(full_index, "d", 0))
-    if dim <= 0:
-        sample = np.asarray(full_index.reconstruct(0), dtype=np.float32)
-        dim = int(sample.shape[0])
-    if dim <= 0:
-        raise RuntimeError("无法构建小索引：向量维度异常。")
-
-    if hasattr(full_index, "hnsw"):
-        hnsw_m = int(full_index.hnsw.nb_neighbors(1))
-        small_index = faiss.IndexHNSWFlat(dim, hnsw_m, faiss.METRIC_INNER_PRODUCT)
-        if hasattr(full_index.hnsw, "efSearch"):
-            small_index.hnsw.efSearch = int(full_index.hnsw.efSearch)
-    else:
-        small_index = faiss.IndexFlatIP(dim)
-
-    batch_size = 10000
-    with tqdm(total=total, desc="FAISS运行时索引构建", unit="条", dynamic_ncols=True, leave=True) as pbar:
-        for start in range(0, total, batch_size):
-            cnt = min(batch_size, total - start)
-            if hasattr(full_index, "reconstruct_n"):
-                vecs = np.asarray(full_index.reconstruct_n(start, cnt), dtype=np.float32)
-            else:
-                vecs = np.asarray([full_index.reconstruct(i) for i in range(start, start + cnt)], dtype=np.float32)
-            small_index.add(vecs)  # type: ignore[call-arg]
-            pbar.update(cnt)
-            pbar.set_postfix_str(f"{start + cnt:,}/{total:,}")
-
-    return small_index
-
-
 def load_text_store(max_rows: Optional[int] = None) -> TextStore:
     """加载 CSV 文本偏移索引（全量加载，带进度条）。
 
@@ -200,23 +159,17 @@ def initialize_system() -> DialogComparator:
     print("[2/5] 加载语义模型...")
     engine = SimCSEModelEngine()
 
-    # 步骤3：加载 FAISS 问句索引（带进度条）
+    # 步骤3：加载 FAISS 问句索引（mmap 只读模式，虚拟内存映射）
     print("[3/5] 加载向量索引...")
-    full_query_index = load_faiss_index()
+    query_index = load_faiss_index()
 
-    full_total = int(getattr(full_query_index, "ntotal", 0))
+    full_total = int(getattr(query_index, "ntotal", 0))
     max_rows = max(1, int(DB_LOAD_MAX_ROWS))
     effective_rows = min(full_total, max_rows)
-    if full_total > effective_rows:
-        print(f"    运行时索引将加载 {effective_rows:,} 条（原始索引 {full_total:,} 条）")
-        query_index = _build_small_query_index(full_query_index, effective_rows)
-    else:
-        query_index = full_query_index
 
-    # 步骤4：加载 CSV 语料偏移索引（全量加载，带进度条）
+    # 步骤4：加载 CSV 语料偏移索引（只截断 CSV，不重建向量索引）
     print("[4/5] 加载语料数据...")
-    total_pairs = int(getattr(query_index, "ntotal", 0))
-    text_store = load_text_store(max_rows=total_pairs)
+    text_store = load_text_store(max_rows=effective_rows)
 
     # 步骤5：组装比较器 — 答句相似度通过 CSV 行号实时编码计算
     print("[5/5] 初始化匹配引擎...")
@@ -229,13 +182,13 @@ def initialize_system() -> DialogComparator:
         rerank_weights=RERANK_WEIGHTS,
         context_max_turns=CONTEXT_MAX_TURNS,
         max_text_len=MAX_TEXT_LEN,
-        context_short_query_len=CONTEXT_SHORT_QUERY_LEN,
-        context_overlap_threshold=CONTEXT_OVERLAP_THRESHOLD,
-        context_semantic_threshold=CONTEXT_SEMANTIC_THRESHOLD,
         context_matching_enabled=True,
     )
 
-    print(f"启动成功，知识库规模（运行时索引）：{total_pairs} 条\n")
+    if full_total > effective_rows:
+        print(f"启动成功，知识库规模：{effective_rows:,} 条（原始索引 {full_total:,} 条）\n")
+    else:
+        print(f"启动成功，知识库规模：{effective_rows:,} 条\n")
     return comparator
 
 

@@ -48,76 +48,25 @@ class DialogComparator:
         rerank_weights=(0.75, 0.25),
         context_max_turns=3,
         max_text_len=64,
-        context_short_query_len=14,
-        context_overlap_threshold=0.34,
-        context_semantic_threshold=0.58,
         context_matching_enabled: bool = True,
         coarse_recall_count: int = 500,
         rerank_top_k: int = 5,
     ):
-        """
-        初始化匹配器。
-
-        参数:
-            model_engine: 文本编码引擎（需提供 encode_one 方法）。
-            query_index: 预加载的问句索引对象。
-            doc_texts: 预加载的文本映射列表。
-            similarity_threshold: 置信度阈值，高于该分值才返回命中回复。
-            rerank_weights: 语义重排权重 (问问相似权重, 问答相似权重)。
-            context_max_turns: 上下文拼接的最大历史轮数。
-            max_text_len: 输入与拼接结果最大长度。
-            context_short_query_len: 触发上下文判定时的短句阈值。
-            context_overlap_threshold: 词面重叠阈值。
-            context_semantic_threshold: 上下文语义相似阈值。
-            context_matching_enabled: 是否启用上下文匹配（默认启用）。
-            coarse_recall_count: 粗召回候选数量（>0 时固定使用；=0 时按自适应公式）。
-            rerank_top_k: 精排阶段默认保留数量。
-        """
         self._eps = 1e-12
         self.model_engine = model_engine
         self.similarity_threshold = min(max(float(similarity_threshold), 0.0), 1.0)
-        self.rerank_weights = self._normalize_rerank_weights(rerank_weights)
+        self.rerank_weights = (max(0.0, float(rerank_weights[0])), max(0.0, float(rerank_weights[1])))
         self.query_index = query_index
-        self.doc_texts: List[dict] = doc_texts if isinstance(doc_texts, list) else []
         self.text_store = text_store
-        if text_store is not None:
-            self.doc_count = len(text_store)
-        elif query_texts is not None and reply_texts is not None:
-            self.query_texts = [str(x) for x in query_texts]
-            self.reply_texts = [str(x) for x in reply_texts]
-            self.doc_count = min(len(self.query_texts), len(self.reply_texts))
-        else:
-            self.query_texts = [str(item.get("query", "") or "") for item in self.doc_texts]
-            self.reply_texts = [str(item.get("reply", "") or "") for item in self.doc_texts]
-            self.doc_count = min(len(self.query_texts), len(self.reply_texts))
-        self.fast_candidate_multiplier = 50
-        self.fast_candidate_min = 200
-        # 显式粗召回数量：0 表示启用自适应计算（兼容旧逻辑）。
+        self.doc_count = len(text_store) if text_store is not None else 0
         self.coarse_recall_count = max(0, int(coarse_recall_count))
-        # 精排默认数量：当上游未指定 top_k 时使用。
         self.rerank_top_k = max(1, int(rerank_top_k))
-        total_docs = self.doc_count
-        # 超大库下适当收紧候选规模，避免重排阶段开销线性放大。
-        if total_docs >= 3000000:
-            self.fast_candidate_multiplier = 20
-            self.fast_candidate_min = 80
-        elif total_docs >= 1000000:
-            self.fast_candidate_multiplier = 30
-            self.fast_candidate_min = 120
-        # 上下文匹配约束：最多 3 轮、单条文本最多 64 字
         self.context_max_turns = max(1, int(context_max_turns))
         self.max_text_len = max(8, int(max_text_len))
-        # 上下文启用判定阈值
-        self.context_short_query_len = max(2, int(context_short_query_len))
-        self.context_overlap_threshold = min(max(float(context_overlap_threshold), 0.0), 1.0)
-        self.context_semantic_threshold = min(max(float(context_semantic_threshold), 0.0), 1.0)
         self.context_matching_enabled = bool(context_matching_enabled)
-        # 上下文缓存固定保留最近 2 轮（用户+系统）。
         self.context_cache_turns = 2
-        # 上下文记忆（独立于对话历史，可通过 /api/context/clear 归零）
         self.context_memory: List[str] = []
 
-        # 轻量查询向量缓存：减少短时间内重复文本的重复编码开销。
         self._query_vec_cache: OrderedDict[str, np.ndarray] = OrderedDict()
         self._query_vec_cache_max_size = 1024
 
@@ -126,16 +75,6 @@ class DialogComparator:
         n = len(self.context_memory)
         self.context_memory.clear()
         return n
-
-    def _normalize_rerank_weights(self, rerank_weights: Tuple[float, float]) -> Tuple[float, float]:
-        """规范化重排权重，确保非负且和不为 0。"""
-        rq = float(rerank_weights[0]) if isinstance(rerank_weights, (list, tuple)) and len(rerank_weights) > 0 else 0.75
-        rr = float(rerank_weights[1]) if isinstance(rerank_weights, (list, tuple)) and len(rerank_weights) > 1 else 0.25
-        rq = max(0.0, rq)
-        rr = max(0.0, rr)
-        if rq + rr <= self._eps:
-            return 0.75, 0.25
-        return rq, rr
 
     def _prepare_user_input(self, user_input: Any) -> str:
         """统一输入清洗与有效性校验，返回可用于检索的文本。"""
@@ -166,20 +105,14 @@ class DialogComparator:
         return vec_np
 
     def _get_query_text(self, idx: int) -> str:
-        """按索引获取问句文本。"""
         if idx < 0 or idx >= self.doc_count:
             return ""
-        if self.text_store is not None:
-            return self.text_store.get_query(idx)
-        return self.query_texts[idx] if hasattr(self, "query_texts") else ""
+        return self.text_store.get_query(idx) if self.text_store is not None else ""
 
     def _get_reply_text(self, idx: int) -> str:
-        """按索引获取答句文本。"""
         if idx < 0 or idx >= self.doc_count:
             return ""
-        if self.text_store is not None:
-            return self.text_store.get_response(idx)
-        return self.reply_texts[idx] if hasattr(self, "reply_texts") else ""
+        return self.text_store.get_response(idx) if self.text_store is not None else ""
 
     def _build_item(self, idx: int) -> CandidateItem:
         """按索引构建候选条目。"""
@@ -525,41 +458,17 @@ class DialogComparator:
             return True
         return False
 
-    @staticmethod
-    def _cosine_sim(vec1: np.ndarray, vec2: np.ndarray) -> float:
-        """计算两向量余弦相似度。"""
-        norm1 = float(np.linalg.norm(vec1))
-        norm2 = float(np.linalg.norm(vec2))
-        if norm1 <= 1e-12 or norm2 <= 1e-12:
-            return 0.0
-        return float(np.dot(vec1, vec2) / (norm1 * norm2))
-
     def _search_candidate_ids(self, query_vector: np.ndarray, top_k: int = 5) -> List[int]:
-        """
-        使用高性能索引先召回候选 id。
-
-        说明:
-            这里返回候选集合（可能大于 top_k），再由后续重排逻辑计算最终分数。
-        """
         if self.query_index is None:
             return []
-
         total = int(self.query_index.ntotal)
         if total <= 0:
             return []
-
-        # 利用索引做快速候选召回（只取 id，不直接使用其分数）。
-        # 优先使用显式粗召回数量；未配置时回退自适应策略。
-        if self.coarse_recall_count > 0:
-            candidate_k = min(max(self.coarse_recall_count, top_k), total)
-        else:
-            candidate_k = min(max(top_k * self.fast_candidate_multiplier, self.fast_candidate_min), total)
+        candidate_k = min(max(self.coarse_recall_count, top_k), total)
         if candidate_k <= 0:
             return []
-
         query_np = np.asarray(query_vector, dtype=np.float32).reshape(1, -1)
-        _, indices = self.query_index.search(query_np, candidate_k)  # type: ignore
-
+        _, indices = self.query_index.search(query_np, candidate_k)
         candidate_ids: List[int] = []
         visited = set()
         for idx in indices[0].tolist():
@@ -570,47 +479,3 @@ class DialogComparator:
             visited.add(idx)
             candidate_ids.append(int(idx))
         return candidate_ids
-
-    def compare(
-        self,
-        user_input: str,
-        history: Optional[List[Any]] = None,
-        top_k: int = 5,
-    ) -> Tuple[str, float, Optional[str], Optional[CandidateItem], str, str]:
-        """
-        语义匹配逻辑：
-        1. 从数据库检索最相近的 top_k 条候选；
-        2. 计算用户输入与候选问答向量的语义相似度；
-        3. 按语义重排权重选出最优回复。
-
-        参数:
-            user_input: 用户自然语言输入。
-
-        返回:
-            (回复文本, 最终分数, 命中问句, 命中条目, 结果类型, 最终编码问句)
-        """
-        reply, score, matched_q, matched_item, result_type, contextual_query, _ = self.compare_with_meta(
-            user_input=user_input,
-            history=history,
-            top_k=top_k,
-        )
-        return reply, score, matched_q, matched_item, result_type, contextual_query
-
-    def get_topk_candidates(
-        self,
-        user_input: str,
-        history: Optional[List[Any]] = None,
-        top_k: int = 5,
-    ) -> Tuple[str, List[ScoredCandidate]]:
-        """
-        返回按融合分排序的 top-k 候选。
-
-        返回:
-            (最终编码问句, [(融合分, 候选条目), ...])
-        """
-        contextual_query, scored_candidates, _ = self._get_topk_candidates_impl(
-            user_input=user_input,
-            history=history,
-            top_k=top_k,
-        )
-        return contextual_query, scored_candidates
