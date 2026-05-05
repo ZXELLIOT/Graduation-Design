@@ -7,6 +7,8 @@ system/bootstrap.py
 """
 
 import os
+import threading
+import time
 from typing import Any, List, Optional, Tuple
 
 import faiss
@@ -80,16 +82,41 @@ def validate_database() -> Tuple[bool, str]:
 
 
 def load_faiss_index() -> Any:
-    """加载 FAISS 问句索引（独立步骤，带进度反馈）。"""
+    """加载 FAISS 问句索引（独立步骤，带实时状态反馈）。"""
     index_path = DB_QUERY_INDEX_FILE
     index_size_mb = os.path.getsize(index_path) / (1024 * 1024)
+    result: dict = {"index": None, "error": None}
+    done = threading.Event()
 
-    with tqdm(total=1, desc="FAISS索引加载", unit="文件", dynamic_ncols=True, leave=True) as pbar:
-        pbar.set_postfix_str(f"{index_size_mb:.1f}MB")
-        query_index = _read_faiss_index_safely(index_path)
-        pbar.update(1)
+    def _load_worker() -> None:
+        try:
+            result["index"] = _read_faiss_index_safely(index_path)
+        except Exception as e:
+            result["error"] = e
+        finally:
+            done.set()
+
+    threading.Thread(target=_load_worker, daemon=True).start()
+
+    spinner = ["|", "/", "-", "\\"]
+    tick = 0
+    t0 = time.perf_counter()
+
+    with tqdm(total=None, desc="FAISS索引加载", unit="步", dynamic_ncols=True, leave=True) as pbar:
+        while not done.wait(0.12):
+            elapsed = time.perf_counter() - t0
+            pbar.set_postfix_str(f"{index_size_mb:.1f}MB {spinner[tick % len(spinner)]} {elapsed:.1f}s")
+            pbar.update(1)
+            tick += 1
+
+        elapsed = time.perf_counter() - t0
+        if result["error"] is not None:
+            raise result["error"]
+
+        query_index = result["index"]
         ntotal = int(getattr(query_index, "ntotal", 0))
-        pbar.set_postfix_str(f"{ntotal:,} 条向量")
+        pbar.set_postfix_str(f"{ntotal:,} 条向量, {elapsed:.1f}s")
+        pbar.update(1)
 
     return query_index
 

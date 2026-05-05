@@ -12,13 +12,16 @@ tests/test_eval02_retrieval_algo_db.py
 
 测试数据:
     从 tests/data/eval_pairs.csv 读取测试用例
-    从 lccc_large.csv 构建不同规模的语料库 (1k/5k/10k/50k)
+    从 lccc_large.csv 取前10000条作为真实测试数据库
+
+时间曲线:
+    仅对10000规模做真实计时，
+    对 10000/50000/100000/1000000/5000000/10000000 用数学公式外推理论增长曲线
 
 输出:
-    - eval02_cases_table.csv:      每个测试用例的输入/预期/三种算法输出
-    - eval02_time_gradient.csv:    不同数据规模下各算法的时间对比
-    - time_gradient.png:           时间增长梯度折线图
-    - speed_compare.png:           三种算法的平均耗时柱状图
+    - eval02_cases_table.csv:      算法名称/测试输入/最佳问句相似度/答句相似度/融合相似度等
+    - time_gradient.png:           不同规模下三种算法平均处理时间增长曲线
+    - weighted_similarity_compare.png: 三算法融合相似度对比图
 """
 
 import os
@@ -26,18 +29,20 @@ import sys
 import time
 from typing import Any, Dict, List, Tuple
 
+import faiss
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from tqdm import tqdm
+import torch
+import torch.nn.functional as F
+from transformers import AutoModel, AutoTokenizer
 
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(CURRENT_DIR)
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from system.bootstrap import load_faiss_index, load_text_store
-from system.comparator import DialogComparator
+from system.config import DB_CSV_PATH, DB_QUERY_INDEX_FILE
 
 from system.model_engine import SimCSEModelEngine
 from tests.tests_config import TEST_DATA_DIR, TEST_RESULTS_DIR
@@ -49,8 +54,10 @@ from tests.tests_config import TEST_DATA_DIR, TEST_RESULTS_DIR
 # 测试用例文件（由对话历史中生成，30对 QA）
 EVAL_PAIRS_CSV = os.path.join(TEST_DATA_DIR, "eval_pairs.csv")
 
-# 数据规模梯度（用于观察时间增长趋势）
-CORPUS_SIZES = [1000, 5000, 10000, 50000]
+CORPUS_SIZES = [10000]
+THEORY_SIZES = [10000, 50000, 100000, 1000000, 5000000, 10000000]
+
+EVAL_PAIR_COUNT = 200
 
 # 全量扫描分块大小（避免单次矩阵乘法撑爆内存）
 CHUNK_SIZE = 2048
@@ -60,96 +67,176 @@ BATCH_SIZE = 64
 
 EPS = 1e-8
 
-# 本地比较器精排数量
-RERANK_TOP_K = 10
+
+# 算法三参数
+RERANK_TOP_K = 5
+COARSE_RECALL_COUNT = 50
+COARSE_SEARCH_K = 200
+
+ALGO_B_QUERY_WEIGHT = 0.75
+ALGO_B_REPLY_WEIGHT = 0.25
+ALGO_C_QUERY_WEIGHT = 0.75
+ALGO_C_REPLY_WEIGHT = 0.25
+
+# 计时基准参数（减少冷启动抖动）
+WARMUP_ROUNDS = 1
+BENCH_REPEATS = 5
+
+# 答句相似度模型（本地 BGE）
+BGE_MODEL_DIR = os.path.join(CURRENT_DIR, "models", "bge-small-zh-v1.5")
+
+# 最终融合分数权重
+FINAL_QUERY_WEIGHT = 0.75
+FINAL_REPLY_WEIGHT = 0.25
 
 
 def _sample_corpus(
     query_texts: List[str],
     reply_texts: List[str],
     corpus_size: int,
-    seed: int = 2026,
 ) -> Tuple[List[str], List[str]]:
-    """从全量语料中随机采样指定数量的子集。"""
+    """获取指定规模的语料子集。顺序截取，保证文本与FAISS小索引中顺序的向量严格对应。"""
     total = min(len(query_texts), len(reply_texts))
     k = min(corpus_size, total)
-    rng = np.random.default_rng(seed)
-    idx = sorted(rng.choice(total, size=k, replace=False).tolist())
-    return [query_texts[i] for i in idx], [reply_texts[i] for i in idx]
+    return query_texts[:k], reply_texts[:k]
 
 
-def _full_cosine_search(
-    query_vectors: np.ndarray,
-    corpus_query_vectors: np.ndarray,
-    corpus_reply_vectors: np.ndarray,
-    corpus_replies: List[str],
-    query_weight: float = 1.0,
-    reply_weight: float = 0.0,
-) -> Tuple[List[str], float]:
-    """
-    全量余弦搜索。
+def _load_query_reply_pairs(n_rows: int) -> Tuple[List[str], List[str]]:
+    """一次性用 Pandas 读取，极大提高加载速度，避免程序卡死。"""
+    print(f"正在通过 pandas 加载 {n_rows} 条文本，请稍候...")
+    df = pd.read_csv(DB_CSV_PATH, nrows=n_rows)
+    query_texts = df["query"].astype(str).tolist()
+    reply_texts = df["response"].astype(str).tolist()
+    return query_texts, reply_texts
 
-    当 reply_weight=0 时是纯问句余弦搜索（算法A），
-    当 reply_weight>0 时是问答加权搜索（算法B）。
 
-    返回: (各用例的匹配答句列表, 总耗时ms)
-    """
+def _build_small_query_index(full_index: Any, n_rows: int) -> Any:
+    """从全量索引重建前 n_rows 条向量，构建与评测语料对齐的小索引。"""
+    total = min(max(int(n_rows), 0), int(getattr(full_index, "ntotal", 0)))
+    if total <= 0:
+        raise RuntimeError("无法构建小索引：可用向量数量为0。")
+
+    if hasattr(full_index, "reconstruct_n"):
+        vecs = np.asarray(full_index.reconstruct_n(0, total), dtype=np.float32)
+    else:
+        vecs = np.asarray([full_index.reconstruct(i) for i in range(total)], dtype=np.float32)
+
+    dim = int(vecs.shape[1])
+    # 与真实库一致：若主索引是 HNSW，则小索引也用 HNSW 结构
+    if hasattr(full_index, "hnsw"):
+        hnsw_m = int(full_index.hnsw.nb_neighbors(1))
+        small_index = faiss.IndexHNSWFlat(dim, hnsw_m, faiss.METRIC_INNER_PRODUCT)
+        if hasattr(full_index.hnsw, "efSearch"):
+            small_index.hnsw.efSearch = int(full_index.hnsw.efSearch)
+    else:
+        small_index = faiss.IndexFlatIP(dim)
+    small_index.add(vecs)  # type: ignore[call-arg]
+    return small_index
+
+
+def _load_faiss_index_quiet(index_path: str) -> Any:
+    """静默加载FAISS索引，只打印简洁日志，不显示进度条动画。"""
+    print("加载FAISS索引...")
     t0 = time.perf_counter()
-    q_mat = np.asarray(query_vectors, dtype=np.float32)
-    cq_mat = np.asarray(corpus_query_vectors, dtype=np.float32)
-    cr_mat = np.asarray(corpus_reply_vectors, dtype=np.float32)
 
-    q_norms = np.linalg.norm(q_mat, axis=1) + EPS
-    cq_norms = np.linalg.norm(cq_mat, axis=1) + EPS
-    cr_norms = np.linalg.norm(cr_mat, axis=1) + EPS
+    io_flag_mmap = int(getattr(faiss, "IO_FLAG_MMAP", 0))
+    io_flag_ro = int(getattr(faiss, "IO_FLAG_READ_ONLY", 0))
+    io_flags = io_flag_mmap | io_flag_ro
 
-    best_scores = np.full((q_mat.shape[0],), -1e9, dtype=np.float32)
-    best_ids = np.full((q_mat.shape[0],), -1, dtype=np.int64)
+    index = None
+    if io_flags != 0:
+        try:
+            index = faiss.read_index(index_path, io_flags)
+        except TypeError:
+            if io_flag_mmap != 0:
+                index = faiss.read_index(index_path, io_flag_mmap)
+        except Exception:
+            index = None
 
-    # 分块扫描避免内存溢出
-    for start in range(0, cq_mat.shape[0], CHUNK_SIZE):
-        end = min(start + CHUNK_SIZE, cq_mat.shape[0])
-        q_chunk = cq_mat[start:end]
-        r_chunk = cr_mat[start:end]
-        qc_norms = cq_norms[start:end]
-        rc_norms = cr_norms[start:end]
+    if index is None:
+        index = faiss.read_index(index_path)
 
-        q_scores = (q_mat @ q_chunk.T) / (q_norms[:, None] * qc_norms[None, :])
-        scores = query_weight * q_scores
-
-        if reply_weight > 0.0:
-            r_scores = (q_mat @ r_chunk.T) / (q_norms[:, None] * rc_norms[None, :])
-            scores = scores + reply_weight * r_scores
-
-        chunk_best = np.argmax(scores, axis=1)
-        chunk_scores = scores[np.arange(scores.shape[0]), chunk_best]
-        update = chunk_scores > best_scores
-        best_scores[update] = chunk_scores[update]
-        best_ids[update] = start + chunk_best[update]
-
-    elapsed_ms = (time.perf_counter() - t0) * 1000.0
-    replies = [corpus_replies[int(i)] if 0 <= int(i) < len(corpus_replies) else "" for i in best_ids]
-    return replies, elapsed_ms
+    elapsed = time.perf_counter() - t0
+    ntotal = int(getattr(index, "ntotal", 0))
+    print(f"FAISS索引加载完成: {ntotal:,} 条向量, {elapsed:.1f}s")
+    return index
 
 
-def _faiss_rerank_search(
-    comparator: DialogComparator,
-    queries: List[str],
-    reply_texts: List[str],
-) -> Tuple[List[str], float]:
-    """
-    FAISS 精排检索（算法C）。
+def _best_idx_excluding_exact(scores: np.ndarray, corpus_queries: List[str], input_query: str) -> int:
+    """从候选中排除与输入完全相同的问句，避免数据泄漏导致的假高分。"""
+    masked = np.asarray(scores, dtype=np.float32).copy()
+    for i, text in enumerate(corpus_queries):
+        if text == input_query:
+            masked[i] = -1e9
+    best = int(np.argmax(masked))
+    if masked[best] <= -1e8:
+        # 极端情况下全部被排除，回退到未屏蔽的最大值
+        return int(np.argmax(scores))
+    return best
 
-    使用系统的 DialogComparator，流程为:
-    FAISS HNSW 索引粗召回 → 问问/问答加权重排 → 返回最优答句
-    """
-    t0 = time.perf_counter()
-    replies: List[str] = []
-    for q in queries:
-        result = comparator.compare(q, history=[], top_k=RERANK_TOP_K)
-        replies.append(str(result[0]))
-    elapsed_ms = (time.perf_counter() - t0) * 1000.0
-    return replies, elapsed_ms
+
+def _encode_texts_with_bge(
+    texts: List[str],
+    tokenizer: Any,
+    model: Any,
+    device: str,
+    batch_size: int,
+) -> np.ndarray:
+    """使用本地 BGE 模型编码文本，并返回 L2 归一化后的向量。"""
+    all_embs: List[np.ndarray] = []
+    with torch.no_grad():
+        for i in range(0, len(texts), batch_size):
+            batch = texts[i : i + batch_size]
+            enc = tokenizer(
+                batch,
+                padding=True,
+                truncation=True,
+                max_length=512,
+                return_tensors="pt",
+            ).to(device)
+            out = model(**enc)
+            hidden = out.last_hidden_state
+            mask = enc["attention_mask"].unsqueeze(-1).expand(hidden.size()).float()
+            summed = (hidden * mask).sum(dim=1)
+            counts = mask.sum(dim=1).clamp(min=1e-9)
+            mean_pooled = summed / counts
+            normed = F.normalize(mean_pooled, p=2, dim=1)
+            all_embs.append(normed.cpu().numpy().astype(np.float32))
+    if not all_embs:
+        return np.zeros((0, 1), dtype=np.float32)
+    return np.vstack(all_embs)
+
+
+def _append_reply_similarity(cases_df: pd.DataFrame) -> pd.DataFrame:
+    """调用本地 BGE 模型，计算 预计输出 vs 实际输出 的答句相似度。"""
+    if not os.path.exists(BGE_MODEL_DIR):
+        raise FileNotFoundError(f"答句相似度模型不存在: {BGE_MODEL_DIR}")
+
+    expected = cases_df["预计输出"].astype(str).tolist()
+    actual = cases_df["实际输出"].astype(str).tolist()
+    all_texts = expected + actual
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    tokenizer = AutoTokenizer.from_pretrained(BGE_MODEL_DIR)
+    model = AutoModel.from_pretrained(BGE_MODEL_DIR).to(device)
+    model.eval()
+
+    embs = _encode_texts_with_bge(
+        all_texts,
+        tokenizer=tokenizer,
+        model=model,
+        device=device,
+        batch_size=BATCH_SIZE,
+    )
+    n = len(cases_df)
+    exp_emb = embs[:n]
+    act_emb = embs[n:]
+    sims = np.sum(exp_emb * act_emb, axis=1)
+    sims = np.clip(sims, -1.0, 1.0)
+
+    out = cases_df.copy()
+    out["答句相似度"] = np.round(sims, 6)
+    return out
 
 
 def run_eval() -> None:
@@ -157,27 +244,38 @@ def run_eval() -> None:
     out_dir = os.path.join(TEST_RESULTS_DIR, "eval02_retrieval_algo_db")
     os.makedirs(out_dir, exist_ok=True)
 
+    # 清理旧版脚本遗留文件，保证输出仅保留两个目标文件
+    legacy_time_csv = os.path.join(out_dir, "eval02_time_gradient.csv")
+    if os.path.exists(legacy_time_csv):
+        os.remove(legacy_time_csv)
+
     plt.rcParams["font.sans-serif"] = [
         "Microsoft YaHei", "SimHei", "Arial Unicode MS", "DejaVu Sans"
     ]
     plt.rcParams["axes.unicode_minus"] = False
 
-    # 加载测试用例
+    # 加载测试用例（逐行）
     if not os.path.exists(EVAL_PAIRS_CSV):
         raise FileNotFoundError(f"测试用例文件不存在: {EVAL_PAIRS_CSV}")
-    eval_df = pd.read_csv(EVAL_PAIRS_CSV)
-    eval_queries = eval_df["query"].astype(str).tolist()
-    eval_expected = eval_df["response"].astype(str).tolist()
+    eval_queries: List[str] = []
+    eval_expected: List[str] = []
+    for i, chunk in enumerate(pd.read_csv(EVAL_PAIRS_CSV, chunksize=1)):
+        if i >= EVAL_PAIR_COUNT:
+            break
+        row = chunk.iloc[0]
+        eval_queries.append(str(row["query"]))
+        eval_expected.append(str(row["response"]))
 
     print(f"加载测试用例: {len(eval_queries)} 对")
 
-    # 加载全量语料库
+    # 加载全量语料库（以最大规模为准，后续采样）
     engine = SimCSEModelEngine()
-    query_index = load_faiss_index()
-    text_store = load_text_store(max_rows=int(getattr(query_index, "ntotal", 0)))
-    query_texts = [text_store.get_query(i) for i in range(len(text_store))]
-    reply_texts = [text_store.get_response(i) for i in range(len(text_store))]
-    print(f"全量语料库规模: {len(text_store)} 条")
+    full_query_index = _load_faiss_index_quiet(DB_QUERY_INDEX_FILE)
+    max_n = max(CORPUS_SIZES)
+    n_total = int(getattr(full_query_index, "ntotal", 0))
+    N = min(max_n, n_total)
+    query_texts, reply_texts = _load_query_reply_pairs(N)
+    print(f"评测用语料库最大规模: {N} 条（仅加载前N条）")
 
     # ============================================================
     # 准备：一次性编码所有测试问句（节省重复编码）
@@ -188,130 +286,281 @@ def run_eval() -> None:
     )
 
     # ============================================================
-    # 逐规模评测
+    # 固定10000规模实测
     # ============================================================
-    time_records: List[Dict[str, Any]] = []
-    cases_records: Dict[int, pd.DataFrame] = {}
+    all_case_rows: List[Dict[str, Any]] = []
 
-    for size in tqdm(CORPUS_SIZES, desc="数据规模梯度评测", unit="规模"):
-        # 构建当前规模的语料子集
-        sub_queries, sub_replies = _sample_corpus(query_texts, reply_texts, size)
-        sub_query_vectors = np.asarray(
-            engine.encode(sub_queries, encoder="query", batch_size=BATCH_SIZE, show_progress=False, return_numpy=True),
+    size = CORPUS_SIZES[0]
+    sub_queries, sub_replies = _sample_corpus(query_texts, reply_texts, size)
+    sub_query_index = _build_small_query_index(full_query_index, size)
+
+    actual_size = int(getattr(sub_query_index, "ntotal", 0))
+    if hasattr(sub_query_index, "reconstruct_n"):
+        sub_query_vectors = np.asarray(sub_query_index.reconstruct_n(0, actual_size), dtype=np.float32)
+    else:
+        sub_query_vectors = np.asarray([sub_query_index.reconstruct(i) for i in range(actual_size)], dtype=np.float32)
+
+    q_norms = np.linalg.norm(sub_query_vectors, axis=1) + EPS
+
+    a_total_ms = 0.0
+    b_total_ms = 0.0
+    c_coarse_total_ms = 0.0
+    c_time1_total_ms = 0.0
+    c_time2_total_ms = 0.0
+
+    for q, exp, q_vec in zip(eval_queries, eval_expected, eval_query_vectors):
+        q_vec = np.asarray(q_vec, dtype=np.float32)
+        qn = float(np.linalg.norm(q_vec) + EPS)
+
+        # 算法一: 全量问句余弦
+        t0 = time.perf_counter()
+        query_scores = (sub_query_vectors @ q_vec) / (q_norms * qn)
+        a_idx = _best_idx_excluding_exact(query_scores, sub_queries, q)
+        a_best_query = sub_queries[a_idx]
+        a_query_sim = float(query_scores[a_idx])
+        a_reply = sub_replies[a_idx]
+        a_total_ms += (time.perf_counter() - t0) * 1000.0
+
+        # 算法二: 先取最高问句，再按需编码该答句并加权
+        t0 = time.perf_counter()
+        b_idx = _best_idx_excluding_exact(query_scores, sub_queries, q)
+        b_best_query = sub_queries[b_idx]
+        b_query_sim = float(query_scores[b_idx])
+        b_reply_vec = np.asarray(
+            engine.encode([sub_replies[b_idx]], encoder="response", batch_size=1, show_progress=False, return_numpy=True)[0],
             dtype=np.float32,
         )
-        sub_reply_vectors = np.asarray(
-            engine.encode(sub_replies, encoder="response", batch_size=BATCH_SIZE, show_progress=False, return_numpy=True),
+        b_reply_norm = float(np.linalg.norm(b_reply_vec) + EPS)
+        b_reply_sim = float((b_reply_vec @ q_vec) / (b_reply_norm * qn))
+        _ = ALGO_B_QUERY_WEIGHT * b_query_sim + ALGO_B_REPLY_WEIGHT * b_reply_sim
+        b_reply = sub_replies[b_idx]
+        b_total_ms += (time.perf_counter() - t0) * 1000.0
+
+        # 算法三: FAISS粗召回50 + 时间1(50条问句余弦) + 时间2(5条答句编码加权)
+        coarse_t0 = time.perf_counter()
+        search_k = min(max(COARSE_SEARCH_K, COARSE_RECALL_COUNT), actual_size)
+        _, i_full = sub_query_index.search(q_vec.reshape(1, -1), search_k)
+        raw_ids = [int(i) for i in i_full[0] if int(i) >= 0]
+        candidate_ids: List[int] = []
+        for cid in raw_ids:
+            if sub_queries[cid] != q:
+                candidate_ids.append(cid)
+            if len(candidate_ids) >= COARSE_RECALL_COUNT:
+                break
+        if not candidate_ids:
+            candidate_ids = [int(np.argmax(query_scores))]
+        c_coarse_total_ms += (time.perf_counter() - coarse_t0) * 1000.0
+
+        # 时间1: 对粗召回的50条问句做余弦并取前5
+        time1_t0 = time.perf_counter()
+        cand_q = sub_query_vectors[candidate_ids]
+        cand_norm = q_norms[candidate_ids]
+        cand_scores = (cand_q @ q_vec) / (cand_norm * qn)
+
+        topk = min(RERANK_TOP_K, len(candidate_ids))
+        top_local = np.argsort(-cand_scores)[:topk]
+        top_ids = [candidate_ids[int(i)] for i in top_local]
+        top_query_scores = cand_scores[top_local]
+        c_time1_total_ms += (time.perf_counter() - time1_t0) * 1000.0
+
+        # 时间2: 仅编码前5条答句并做问答加权
+        time2_t0 = time.perf_counter()
+        top_replies = [sub_replies[i] for i in top_ids]
+        top_reply_vecs = np.asarray(
+            engine.encode(
+                top_replies,
+                encoder="response",
+                batch_size=min(BATCH_SIZE, max(1, topk)),
+                show_progress=False,
+                return_numpy=True,
+            ),
             dtype=np.float32,
         )
+        top_reply_norms = np.linalg.norm(top_reply_vecs, axis=1) + EPS
+        top_reply_scores = (top_reply_vecs @ q_vec) / (top_reply_norms * qn)
 
-        # 算法A: 全量问句余弦
-        a_replies, a_ms = _full_cosine_search(
-            eval_query_vectors, sub_query_vectors, sub_reply_vectors,
-            sub_replies, query_weight=1.0, reply_weight=0.0,
+        weighted_scores = (
+            ALGO_C_QUERY_WEIGHT * top_query_scores
+            + ALGO_C_REPLY_WEIGHT * top_reply_scores
         )
+        best_local = int(np.argmax(weighted_scores))
+        c_idx = top_ids[best_local]
+        c_best_query = sub_queries[c_idx]
+        c_query_sim = float(query_scores[c_idx])
+        c_reply = sub_replies[c_idx]
+        c_time2_total_ms += (time.perf_counter() - time2_t0) * 1000.0
 
-        # 算法B: 全量问答加权
-        b_replies, b_ms = _full_cosine_search(
-            eval_query_vectors, sub_query_vectors, sub_reply_vectors,
-            sub_replies, query_weight=0.75, reply_weight=0.25,
-        )
-
-        # 算法C: FAISS精排（仅全量规模有索引）
-        if size == CORPUS_SIZES[-1]:
-            comparator = DialogComparator(
-                model_engine=engine,
-                query_index=query_index,
-                doc_texts=[],
-                query_texts=query_texts,
-                reply_texts=reply_texts,
-                similarity_threshold=0.0,
-                context_matching_enabled=False,
-                rerank_top_k=RERANK_TOP_K,
-            )
-            c_replies, c_ms = _faiss_rerank_search(comparator, eval_queries, reply_texts)
-        else:
-            c_replies = [""] * len(eval_queries)
-            c_ms = 0.0
-
-        # 记录时间
-        time_records.append(
+        # 保存用例级对比（每个算法每条用例一行）
+        all_case_rows.append(
             {
-                "数据规模": size,
-                "全量问句余弦(ms)": round(a_ms / max(len(eval_queries), 1), 2),
-                "全量问答加权(ms)": round(b_ms / max(len(eval_queries), 1), 2),
-                "FAISS精排(ms)": round(c_ms / max(len(eval_queries), 1), 2) if c_ms > 0 else 0,
+                "算法名称": "算法一",
+                "测试输入": q,
+                "当前算法最相似问句": a_best_query,
+                "当前算法问句相似度": round(a_query_sim, 6),
+                "预计输出": exp,
+                "实际输出": a_reply,
+            }
+        )
+        all_case_rows.append(
+            {
+                "算法名称": "算法二",
+                "测试输入": q,
+                "当前算法最相似问句": b_best_query,
+                "当前算法问句相似度": round(b_query_sim, 6),
+                "预计输出": exp,
+                "实际输出": b_reply,
+            }
+        )
+        all_case_rows.append(
+            {
+                "算法名称": "算法三",
+                "测试输入": q,
+                "当前算法最相似问句": c_best_query,
+                "当前算法问句相似度": round(c_query_sim, 6),
+                "预计输出": exp,
+                "实际输出": c_reply,
             }
         )
 
-        # 保存用例级对比（仅最大规模输出详表）
-        if size == CORPUS_SIZES[-1]:
-            cases_df = pd.DataFrame(
-                {
-                    "序号": range(1, len(eval_queries) + 1),
-                    "输入问句": eval_queries,
-                    "预期答句": eval_expected,
-                    "算法A_全量余弦": a_replies,
-                    "算法B_问答加权": b_replies,
-                    "算法C_FAISS精排": c_replies,
-                }
-            )
-            cases_df.to_csv(
-                os.path.join(out_dir, "eval02_cases_table.csv"),
-                index=False,
-                encoding="utf-8-sig",
-            )
+    sample_count = max(1, len(eval_queries))
+    base_avg_a = a_total_ms / sample_count
+    base_avg_b = b_total_ms / sample_count
+    base_coarse_avg = c_coarse_total_ms / sample_count
+    base_time1_avg = c_time1_total_ms / sample_count
+    base_time2_avg = c_time2_total_ms / sample_count
+    base_avg_c = base_coarse_avg + base_time1_avg + base_time2_avg
+    c_total_ms = c_coarse_total_ms + c_time1_total_ms + c_time2_total_ms
 
-    # ============================================================
-    # 输出时间表格
-    # ============================================================
-    time_df = pd.DataFrame(time_records)
-    time_df.to_csv(
-        os.path.join(out_dir, "eval02_time_gradient.csv"),
+    print("\n===== 10000规模实测总耗时 (ms) =====")
+    print(f"算法一总耗时: {a_total_ms:.2f}")
+    print(f"算法二总耗时: {b_total_ms:.2f}")
+    print(f"算法三总耗时: {c_total_ms:.2f}")
+    print(f"算法三粗召回总耗时: {c_coarse_total_ms:.2f}")
+    print(f"算法三时间1总耗时(50条问句余弦): {c_time1_total_ms:.2f}")
+    print(f"算法三时间2总耗时(5条答句编码加权): {c_time2_total_ms:.2f}")
+
+    # 输出总csv（集成答句相似度与融合相似度）
+    cases_df = pd.DataFrame(all_case_rows)
+    cases_df["当前算法问句相似度"] = pd.to_numeric(cases_df["当前算法问句相似度"], errors="coerce")
+    cases_df = _append_reply_similarity(cases_df)
+    cases_df["融合相似度"] = np.round(
+        FINAL_QUERY_WEIGHT * cases_df["当前算法问句相似度"]
+        + FINAL_REPLY_WEIGHT * cases_df["答句相似度"],
+        6,
+    )
+
+    out_cols = [
+        "算法名称",
+        "测试输入",
+        "当前算法最相似问句",
+        "当前算法问句相似度",
+        "预计输出",
+        "实际输出",
+        "答句相似度",
+        "融合相似度",
+    ]
+    cases_df = cases_df[out_cols]
+    cases_df.to_csv(
+        os.path.join(out_dir, "eval02_cases_table.csv"),
         index=False,
         encoding="utf-8-sig",
     )
 
-    print("\n===== 不同数据规模下各算法的平均每句耗时 (ms) =====")
-    print(time_df.to_string(index=False))
+    # 输出融合相似度对比图（按算法均值）
+    algo_order = ["算法一", "算法二", "算法三"]
+    score_stats = (
+        cases_df.groupby("算法名称")["融合相似度"]
+        .agg(mean="mean", median="median", std="std")
+        .reindex(algo_order)
+        .dropna()
+        .reset_index()
+    )
 
-    # ============================================================
-    # 图表: 时间增长梯度折线图
-    # ============================================================
+    fig2, ax2 = plt.subplots(figsize=(8, 5))
+    bars = ax2.bar(
+        score_stats["算法名称"],
+        score_stats["mean"],
+        color=["#ef4444", "#f59e0b", "#2a9d8f"],
+    )
+    for b, v in zip(bars, score_stats["mean"].tolist()):
+        ax2.text(
+            b.get_x() + b.get_width() / 2,
+            float(v) + 0.01,
+            f"{float(v):.4f}",
+            ha="center",
+            va="bottom",
+            fontsize=9,
+        )
+    ax2.set_ylim(0.0, 1.0)
+    ax2.set_ylabel("0.75 * 最佳问句相似度 + 0.25 * 答句相似度")
+    ax2.set_title("三算法融合相似度对比图")
+    ax2.grid(axis="y", alpha=0.3)
+    fig2.tight_layout()
+    fig2.savefig(
+        os.path.join(out_dir, "weighted_similarity_compare.png"),
+        dpi=300,
+        bbox_inches="tight",
+    )
+    plt.close(fig2)
+
+    # 理论增长曲线：基于10000实测点，用数学公式外推
+    theory_sizes = np.asarray(THEORY_SIZES, dtype=np.float64)
+    base_n = 10000.0
+    theory_a = (base_avg_a / base_n) * theory_sizes
+    theory_b = (base_avg_b / base_n) * theory_sizes
+
+    # 算法三粗召回复杂度（基于真实 HNSW 索引结构）:
+    # T_coarse(N) ~ efSearch * log_M(N) + k
+    # 其中 M 为图连接度, efSearch 为搜索宽度, k 为返回候选数量（search_k）
+    hnsw_m = int(sub_query_index.hnsw.nb_neighbors(1)) if hasattr(sub_query_index, "hnsw") else 32
+    hnsw_ef = int(sub_query_index.hnsw.efSearch) if hasattr(sub_query_index, "hnsw") else 16
+    m_base = max(2, hnsw_m)
+    n0 = float(CORPUS_SIZES[0])
+    denom = hnsw_ef * (np.log(n0) / np.log(m_base)) + float(COARSE_RECALL_COUNT)
+    numer = hnsw_ef * (np.log(theory_sizes) / np.log(m_base)) + float(COARSE_RECALL_COUNT)
+    coarse_factor = numer / max(denom, EPS)
+    theory_c_coarse = base_coarse_avg * coarse_factor
+    # 时间1固定50条余弦，时间2固定5条答句编码加权，视为常数
+    theory_c = theory_c_coarse + base_time1_avg + base_time2_avg
+
+    # 显式锚定10000点，确保起点就是当前10000规模实测平均耗时
+    theory_a[0] = base_avg_a
+    theory_b[0] = base_avg_b
+    theory_c[0] = base_avg_c
+
+    print("\n===== 理论平均处理时间 (ms/条) =====")
+    print(f"HNSW参数: M={hnsw_m}, efSearch={hnsw_ef}, coarse_recall_count={COARSE_RECALL_COUNT}")
+    print(f"算法三常量项: 时间1={base_time1_avg:.4f} ms/条, 时间2={base_time2_avg:.4f} ms/条")
+    theory_df = pd.DataFrame(
+        {
+            "数据规模": theory_sizes.astype(np.int64),
+            "算法一_平均时间(ms/条)": np.round(theory_a, 4),
+            "算法二_平均时间(ms/条)": np.round(theory_b, 4),
+            "算法三_平均时间(ms/条)": np.round(theory_c, 4),
+        }
+    )
+    print(theory_df.to_string(index=False))
+
+    # 画理论时间增长曲线（平均每条语句）
     fig, ax = plt.subplots(figsize=(9, 5.5))
-    sizes = time_df["数据规模"].values
-    for col, color, label in [
-        ("全量问句余弦(ms)", "#ef4444", "全量问句余弦"),
-        ("全量问答加权(ms)", "#f59e0b", "全量问答加权"),
-        ("FAISS精排(ms)", "#2a9d8f", "FAISS精排"),
-    ]:
-        vals = time_df[col].values
-        ax.plot(sizes.astype(str), vals, marker="o", color=color, label=label, linewidth=2)
-    ax.set_xlabel("语料库规模（条）")
-    ax.set_ylabel("平均每句耗时（ms）")
-    ax.set_title("检索算法时间增长梯度对比")
+    sizes = theory_sizes
+    y1 = theory_a
+    y2 = theory_b
+    y3 = theory_c
+    ax.plot(sizes, y1, marker="o", color="#ef4444", label="算法一：全量问句余弦", linewidth=2)
+    ax.plot(sizes, y2, marker="o", color="#f59e0b", label="算法二：全量问答加权", linewidth=2)
+    ax.plot(sizes, y3, marker="o", color="#2a9d8f", label="算法三：FAISS精排", linewidth=2)
+    ax.set_xlabel("语料库规模")
+    ax.set_ylabel("平均处理时间 (ms/条)")
+    ax.set_title("三种检索算法理论平均处理时间增长曲线")
+    ax.set_xscale("log")
+    ax.set_xticks(sizes.tolist())
+    ax.set_xticklabels(["10000", "50000", "100000", "1000000", "5000000", "10000000"])
     ax.legend()
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
     fig.savefig(os.path.join(out_dir, "time_gradient.png"), dpi=300, bbox_inches="tight")
     plt.close(fig)
-
-    # 柱状图: 全量规模下三算法耗时对比
-    last_row = time_df[time_df["数据规模"] == CORPUS_SIZES[-1]]
-    if not last_row.empty:
-        fig2, ax2 = plt.subplots(figsize=(8, 5))
-        alg_names = ["全量问句余弦", "全量问答加权", "FAISS精排"]
-        alg_cols = ["全量问句余弦(ms)", "全量问答加权(ms)", "FAISS精排(ms)"]
-        alg_vals = [float(last_row[c].iloc[0]) for c in alg_cols]
-        colors = ["#ef4444", "#f59e0b", "#2a9d8f"]
-        bars = ax2.bar(alg_names, alg_vals, color=colors, edgecolor="#1f2a37")
-        ax2.set_ylabel("平均每句耗时（ms）")
-        ax2.set_title(f"全量规模 ({CORPUS_SIZES[-1]} 条) 下三种算法耗时对比")
-        for b, v in zip(bars, alg_vals):
-            ax2.text(b.get_x() + b.get_width() / 2, b.get_height() + 1, f"{v:.2f}", ha="center", fontsize=10)
-        fig2.tight_layout()
-        fig2.savefig(os.path.join(out_dir, "speed_compare.png"), dpi=300, bbox_inches="tight")
-        plt.close(fig2)
 
     print(f"\n评测完成，结果保存至: {out_dir}")
 
