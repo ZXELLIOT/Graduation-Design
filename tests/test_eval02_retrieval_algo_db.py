@@ -73,8 +73,6 @@ RERANK_TOP_K = 5
 COARSE_RECALL_COUNT = 50
 COARSE_SEARCH_K = 200
 
-ALGO_B_QUERY_WEIGHT = 0.75
-ALGO_B_REPLY_WEIGHT = 0.25
 ALGO_C_QUERY_WEIGHT = 0.75
 ALGO_C_REPLY_WEIGHT = 0.25
 
@@ -326,13 +324,6 @@ def run_eval() -> None:
         b_idx = _best_idx_excluding_exact(query_scores, sub_queries, q)
         b_best_query = sub_queries[b_idx]
         b_query_sim = float(query_scores[b_idx])
-        b_reply_vec = np.asarray(
-            engine.encode([sub_replies[b_idx]], encoder="response", batch_size=1, show_progress=False, return_numpy=True)[0],
-            dtype=np.float32,
-        )
-        b_reply_norm = float(np.linalg.norm(b_reply_vec) + EPS)
-        b_reply_sim = float((b_reply_vec @ q_vec) / (b_reply_norm * qn))
-        _ = ALGO_B_QUERY_WEIGHT * b_query_sim + ALGO_B_REPLY_WEIGHT * b_reply_sim
         b_reply = sub_replies[b_idx]
         b_total_ms += (time.perf_counter() - t0) * 1000.0
 

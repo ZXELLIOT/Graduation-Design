@@ -176,7 +176,6 @@ def initialize_system() -> DialogComparator:
     comparator = DialogComparator(
         model_engine=engine,
         query_index=query_index,
-        doc_texts=[],
         text_store=text_store,
         similarity_threshold=SIMILARITY_THRESHOLD,
         rerank_weights=RERANK_WEIGHTS,

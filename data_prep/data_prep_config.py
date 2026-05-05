@@ -35,20 +35,6 @@ LARGE_JSON_PATH = str(LCCC_large_DIR / "LCCC-large.json")
 LARGE_CSV_PATH = str(LCCC_large_DIR / "system_data.csv")
 
 # ============================================================
-# 训练相关路径
-# ============================================================
-
-# 本地预训练模型目录（text2vec-base-chinese，供 train.py 优先加载）
-LOCAL_PRETRAINED_DIR = str(
-    Path(__file__).resolve().parents[1] / "train" / "text2vec-base-chinese"
-)
-
-# 训练完成后模型输出目录（双塔模型 query_encoder / response_encoder）
-OUTPUT_MODEL_DIR = str(
-    Path(__file__).resolve().parents[1] / "model" / "mysimcse"
-)
-
-# ============================================================
 # 文本清洗参数
 # ============================================================
 

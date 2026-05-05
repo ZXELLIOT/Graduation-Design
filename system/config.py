@@ -25,7 +25,6 @@ except ImportError:
     pass
 
 # 模型目录
-MODEL_DIR = str(PROJECT_ROOT / "model")
 SIMCSE_MODEL_DIR = str(PROJECT_ROOT / "model" / "mysimcse")
 
 # ============================================================

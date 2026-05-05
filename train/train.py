@@ -195,63 +195,16 @@ def _apply_quick_cap(size_value: int, cap: int) -> int:
 # ============================================================
 
 
-class PositivePairDataset(Dataset):
-    """正样本对数据集：每条数据为 (query, response)。"""
-
-    def __init__(self, queries, responses):
-        """初始化正样本对数据集。
-
-        参数:
-            queries: 问句列表。
-            responses: 回复列表。
-        返回:
-            无返回值。
-        """
-        if len(queries) != len(responses):
-            raise ValueError('正样本问答数量不一致。')
-        self.queries = queries
-        self.responses = responses
-
-    def __len__(self):
-        """返回数据集大小。"""
-        return len(self.queries)
-
-    def __getitem__(self, idx):
-        """按索引获取单条样本。
-
-        参数:
-            idx: 样本索引。
-        返回:
-            (query, response) 元组。
-        """
-        return self.queries[idx], self.responses[idx]
-
-
 class QueryOnlyDataset(Dataset):
     """仅问句数据集：query。"""
 
     def __init__(self, queries):
-        """初始化问句数据集。
-
-        参数:
-            queries: 问句列表。
-        返回:
-            无返回值。
-        """
         self.queries = queries
 
     def __len__(self):
-        """返回数据集大小。"""
         return len(self.queries)
 
     def __getitem__(self, idx):
-        """按索引获取单条问句。
-
-        参数:
-            idx: 样本索引。
-        返回:
-            单条问句字符串。
-        """
         return self.queries[idx]
 
 

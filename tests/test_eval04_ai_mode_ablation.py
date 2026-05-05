@@ -262,7 +262,7 @@ def _local_ai_enhanced(comparator: DialogComparator, question: str) -> Tuple[str
     再将候选和用户问句一起发送给大模型，让大模型融合候选生成最终回复。
     """
     t0 = time.perf_counter()
-    used_q, cands = comparator.get_topk_candidates(user_input=question, history=[], top_k=RERANK_TOP_K)
+    used_q, cands, _ = comparator.get_topk_candidates_with_meta(user_input=question, history=[], top_k=RERANK_TOP_K)
     if not cands:
         elapsed = (time.perf_counter() - t0) * 1000.0
         return "知识库没有这个问题的回复", elapsed
@@ -290,7 +290,7 @@ def _local_only(comparator: DialogComparator, question: str) -> Tuple[str, float
     只用系统双塔做语义匹配，从知识库中返回最相似的答句。
     """
     t0 = time.perf_counter()
-    reply = str(comparator.compare(question, history=[], top_k=RERANK_TOP_K)[0])
+    reply = str(comparator.compare_with_meta(question, history=[], top_k=RERANK_TOP_K)[0])
     elapsed = (time.perf_counter() - t0) * 1000.0
     return reply, elapsed
 
@@ -318,7 +318,6 @@ def run_eval() -> None:
     comparator = DialogComparator(
         model_engine=engine,
         query_index=query_index,
-        doc_texts=[],
         text_store=text_store,
         similarity_threshold=0.0,
         context_matching_enabled=False,

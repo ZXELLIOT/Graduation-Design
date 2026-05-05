@@ -5,9 +5,6 @@ db/db_config.py
     数据库构建模块配置。
 """
 
-from system.config import DB_CSV_PATH, DB_DATA_DIR
+from system.config import DB_CSV_PATH, DB_DATA_DIR, DB_QUERY_INDEX_FILE
 
-# 问句索引输出路径
-DB_INDEX_PATH = str(DB_DATA_DIR) + "/querydata"
-
-__all__ = ["DB_CSV_PATH", "DB_DATA_DIR", "DB_INDEX_PATH"]
+__all__ = ["DB_CSV_PATH", "DB_DATA_DIR", "DB_QUERY_INDEX_FILE"]

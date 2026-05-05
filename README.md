@@ -12,8 +12,8 @@
 
 - **双塔模型**: query encoder + response encoder，独立编码问句与答句
 - **两阶段训练**: 无监督 SimCSE（语义空间构建）→ 有监督匹配（正负样本对比）
-- **FAISS 双索引**: query 索引用于粗召回，response 索引参与重排打分
-- **上下文感知**: 关键词触发 + 短文本检测 + 词面/语义多信号判定
+- **FAISS 向量检索**: query 索引用于粗召回，答句按 CSV 行号实时编码参与重排
+- **上下文感知**: 可配置上下文窗口，自动拼接多轮历史
 - **AI 增强**: 检索候选 + 外部大模型融合润色（可选，默认关闭）
 
 ## 目录结构
@@ -30,7 +30,7 @@ simcse-demo/
 │   └── text2vec-base-chinese/  # 预训练模型（不进入版本控制）
 ├── db/                     # 向量库构建
 │   ├── encoder_module.py       # 语料编码 → FAISS 索引入库
-│   ├── config.py               # 路径配置
+│   ├── db_config.py              # 路径配置
 │   └── data/                   # CSV 语料 + FAISS 索引文件（不进入版本控制）
 ├── model/                  # 训练产出的双塔模型（不进入版本控制）
 │   └── mysimcse/
@@ -96,7 +96,7 @@ python db/encoder_module.py --n_samples 10000 --batch_size 128
 python system/app.py
 ```
 
-服务默认运行在 `http://127.0.0.1:7860`，启动后会自动尝试 cloudflared 内网穿透。
+服务默认运行在 `http://127.0.0.1:7860`。
 
 ## 模型训练
 
@@ -134,7 +134,7 @@ python train/train.py --model_name_or_path /path/to/pretrained/model
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | GET | `/` | 前端页面 |
-| GET | `/api/meta` | 服务元信息（知识库来源、隧道地址） |
+| GET | `/api/meta` | 服务元信息（知识库来源、日志路径） |
 | POST | `/api/chat` | 聊天接口 |
 | GET | `/api/settings/comparator` | 读取当前调参配置 |
 | POST | `/api/settings/comparator` | 热更新调参参数 |
@@ -156,19 +156,17 @@ python train/train.py --model_name_or_path /path/to/pretrained/model
 
 | 变量 | 说明 | 默认值 |
 |------|------|--------|
-| `AUTO_TUNNEL_ENABLED` | 启动时自动开启 cloudflared 内网穿透 | `1` |
-| `TUNNEL_LOCAL_URL` | 隧道目标地址 | `http://127.0.0.1:7860` |
 | `AI_ENHANCED_DEFAULT` | 启动时默认开启 AI 增强 | `0` |
 | `ARK_API_KEY` | AI 增强使用的 API Key | — |
-| `ARK_MODEL_NAME` | AI 增强模型名称 | `Doubao1.5-vision-pro` |
+| `ARK_MODEL_NAME` | AI 增强模型名称 | `doubao-seed-2-0-pro-260215` |
 | `ARK_RESPONSES_URL` | AI 增强 API 地址 | `https://ark.cn-beijing.volces.com/api/v3/responses` |
 | `ARK_TIMEOUT_SEC` | AI 增强请求超时（秒） | `20` |
 
 ## 前端功能
 
 - **对话窗口**: 支持回车发送、Shift+Enter 换行，自动维护多轮上下文
-- **调参面板**: 热更新命中阈值、重排权重、粗召回/精排数量、上下文匹配开关、AI 增强开关
-- **日志面板**: 实时查看对话日志，含上下文判定理由、检索链路指标、AI 回退原因
+- **调参面板**: 热更新命中阈值、重排权重、粗召回/精排数量、上下文开关、AI 增强开关
+- **日志面板**: 实时查看对话日志，含上下文状态、检索链路指标、AI 回退原因
 - **性能监控**: 每 2 秒刷新 CPU/内存使用率、会话平均时延/P95 时延，折线图可视化
 - **会话管理**: 清除当前对话（仅清空窗口，日志保留）、清空日志文件
 
@@ -198,9 +196,8 @@ python tests/test_eval01_model_corr_speed.py
 ### 启动报错模型或索引文件缺失
 
 检查以下资源是否存在：
-- `db/data/lccc_large.csv` — 知识库 CSV
-- `db/data/large_faiss_db_query.index` — 问句向量索引
-- `db/data/large_faiss_db_response.index` — 答句向量索引
+- `db/data/system_data.csv` — 知识库 CSV
+- `db/data/querydata` — 问句向量索引
 - `model/mysimcse/` — 训练好的双塔模型
 
 缺失时按顺序执行：数据预处理 → 构建索引 → 训练或获取模型文件。

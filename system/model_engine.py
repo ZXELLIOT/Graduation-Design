@@ -93,20 +93,8 @@ class SimCSEModelEngine:
 
     @staticmethod
     def _sanitize_tensor_values(tensor: torch.Tensor) -> torch.Tensor:
-        """手动清洗异常值
-
-        规则：
-        1. NaN 替换为 0
-        2. +Inf 替换为 1
-        3. -Inf 替换为 -1
-        """
-        finite_mask = torch.isfinite(tensor)
-        cleaned = torch.where(finite_mask, tensor, torch.zeros_like(tensor))
-        pos_inf_mask = torch.isinf(tensor) & (tensor > 0)
-        neg_inf_mask = torch.isinf(tensor) & (tensor < 0)
-        cleaned = torch.where(pos_inf_mask, torch.ones_like(cleaned), cleaned)
-        cleaned = torch.where(neg_inf_mask, -torch.ones_like(cleaned), cleaned)
-        return cleaned
+        """NaN→0, +Inf→1, -Inf→-1"""
+        return torch.nan_to_num(tensor, nan=0.0, posinf=1.0, neginf=-1.0)
 
     @staticmethod
     def _safe_l2_norm(tensor: torch.Tensor, dim=None, keepdim: bool = False) -> torch.Tensor:

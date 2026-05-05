@@ -6,7 +6,7 @@ system/comparator.py
 
 核心检索流程（6步）:
     步骤1: 输入清洗 — 去空格、截断、过滤无效输入
-    步骤2: 上下文判定 — 检测短文本/指代关键词，决定是否拼接历史
+    步骤2: 上下文拼接 — 按 context_matching_enabled 开关决定是否拼接历史
     步骤3: Query 编码 — 将文本转为 768 维语义向量
     步骤4: FAISS 粗召回 — 在 query_index 中快速召回 top-N 候选索引
     步骤5: 加权重排 — 按 CSV 行号读取答句实时编码，加权融合排序
@@ -40,10 +40,7 @@ class DialogComparator:
         self,
         model_engine,
         query_index,
-        doc_texts,
         similarity_threshold,
-        query_texts: Optional[List[str]] = None,
-        reply_texts: Optional[List[str]] = None,
         text_store: Any = None,
         rerank_weights=(0.75, 0.25),
         context_max_turns=3,
@@ -64,7 +61,6 @@ class DialogComparator:
         self.context_max_turns = max(1, int(context_max_turns))
         self.max_text_len = max(8, int(max_text_len))
         self.context_matching_enabled = bool(context_matching_enabled)
-        self.context_cache_turns = 2
         self.context_memory: List[str] = []
 
         self._query_vec_cache: OrderedDict[str, np.ndarray] = OrderedDict()
@@ -119,9 +115,6 @@ class DialogComparator:
         return {
             "query": self._get_query_text(idx),
             "reply": self._get_reply_text(idx),
-            "query_idx": int(idx),
-            "reply_idx": int(idx),
-            "csv_idx": int(idx),
         }
 
 
@@ -191,10 +184,10 @@ class DialogComparator:
                     user_text = self._normalize_input(str(turn[0]))
                     if user_text and not self._is_invalid_after_clean(user_text):
                         recent.append(self._truncate_text(user_text))
-        recent = recent[-self.context_cache_turns:]
+        recent = recent[-self.context_max_turns:]
 
         # 合并上下文记忆中的历史
-        all_context = list(self.context_memory[-self.context_cache_turns:]) + recent
+        all_context = list(self.context_memory[-self.context_max_turns:]) + recent
 
         if not all_context:
             return current, meta
@@ -202,8 +195,8 @@ class DialogComparator:
         contextual = self._merge_context_with_budget(current, all_context)
         # 将当前输入存入上下文记忆
         self.context_memory.append(self._truncate_text(self._normalize_input(current_text)))
-        if len(self.context_memory) > self.context_cache_turns * 2:
-            self.context_memory = self.context_memory[-self.context_cache_turns:]
+        if len(self.context_memory) > self.context_max_turns * 2:
+            self.context_memory = self.context_memory[-self.context_max_turns:]
 
         meta.update({
             "enabled": True, "reason": "context_enabled",
@@ -220,27 +213,14 @@ class DialogComparator:
     ) -> Tuple[str, TraceMeta]:
         """
         步骤1+2：输入清洗 + 上下文拼接判定。
-
-        步骤1 — 输入清洗:
-            - 去多余空格、截断过长文本
-            - 过滤纯数字、纯符号等无效输入
-
-        步骤2 — 上下文拼接判定（多信号）:
-            - 短文本（≤4字）→ 直接拼接最近历史
-            - 命中关键词（你/它/这个...）→ 直接拼接
-            - 否则保持原输入不拼接
         """
         cleaned_input = self._prepare_user_input(user_input)
         if not cleaned_input:
             return "", {
                 "enabled": False,
                 "reason": "invalid_input",
-                "has_trigger": False,
-                "is_short_query": False,
-                "negative_hit": False,
                 "history_count": 0,
                 "current_text_len": 0,
-                "recent_contexts": [],
             }
 
         contextual_query, context_meta = self.build_contextual_query_with_meta(cleaned_input, history)
@@ -410,12 +390,8 @@ class DialogComparator:
                 "context": {
                     "enabled": False,
                     "reason": "invalid_input",
-                    "has_trigger": False,
-                    "is_short_query": False,
-                    "negative_hit": False,
                     "history_count": 0,
                     "current_text_len": 0,
-                    "recent_contexts": [],
                 },
                 "retrieval": {
                     "top_k_requested": max(1, int(top_k or self.rerank_top_k)),

@@ -28,7 +28,7 @@ if SYSTEM_DIR not in sys.path:
     sys.path.insert(0, SYSTEM_DIR)
 
 from system.model_engine import SimCSEModelEngine
-from db.db_config import DB_CSV_PATH, DB_INDEX_PATH
+from db.db_config import DB_CSV_PATH, DB_QUERY_INDEX_FILE
 
 DEFAULT_VECTOR_DIM = 768
 
@@ -119,7 +119,6 @@ class CorpusEncoder:
         index_path: str,
         n_samples=0,
         batch_size: int = 128,
-        checkpoint_every: int = 5,
     ):
         """
         编码入库主流程。
@@ -129,7 +128,6 @@ class CorpusEncoder:
             index_path:    FAISS 索引输出路径 (如 db/data/querydata)。
             n_samples:     样本上限 (<=0 表示全量)。
             batch_size:    编码批大小。
-            checkpoint_every: 每 N 块存一次检查点。
         """
         total = DataLoader.resolve_target_rows(csv_path, n_samples=n_samples if n_samples > 0 else None)
         db = VectorDB(dimension=DEFAULT_VECTOR_DIM)
@@ -159,10 +157,9 @@ class CorpusEncoder:
 def main():
     parser = argparse.ArgumentParser(description="问句向量索引入库")
     parser.add_argument("--data_csv", type=str, default=DB_CSV_PATH)
-    parser.add_argument("--index_path", type=str, default=DB_INDEX_PATH)
+    parser.add_argument("--index_path", type=str, default=DB_QUERY_INDEX_FILE)
     parser.add_argument("--batch_size", type=int, default=128)
     parser.add_argument("--n_samples", type=int, default=0)
-    parser.add_argument("--checkpoint_every", type=int, default=5)
     args = parser.parse_args()
 
     engine = SimCSEModelEngine()
@@ -172,7 +169,6 @@ def main():
         index_path=args.index_path,
         n_samples=args.n_samples,
         batch_size=args.batch_size,
-        checkpoint_every=args.checkpoint_every,
     )
     print(f"结果: {result}")
 

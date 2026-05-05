@@ -71,11 +71,9 @@ class ComparatorSettingsRequest(BaseModel):
     rerank_reply_weight: Optional[float] = None
     context_max_turns: Optional[int] = None
     max_text_len: Optional[int] = None
-    context_short_query_len: Optional[int] = None
     context_matching_enabled: Optional[bool] = None
     coarse_recall_count: Optional[int] = None
     rerank_top_k: Optional[int] = None
-    ai_enhanced: Optional[bool] = None
 
 
 api_app = FastAPI(title="SimCSE 检索式对话系统", version="1.0.0")

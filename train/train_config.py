@@ -34,19 +34,3 @@ LOCAL_PRETRAINED_DIR = str(TRAIN_MODEL_DIR / "text2vec-base-chinese")
 # ============================================================
 OUTPUT_MODEL_DIR = str(TRAIN_ROOT / "output")
 
-# ============================================================
-# 训练默认超参数
-# ============================================================
-DEFAULT_TEMPERATURE = 0.05
-DEFAULT_MAX_LENGTH = 64
-DEFAULT_STAGE1_EPOCHS = 2
-DEFAULT_STAGE1_BATCH_SIZE = 512
-DEFAULT_STAGE1_LR = 3e-5
-DEFAULT_STAGE2_EPOCHS = 4
-DEFAULT_STAGE2_BATCH_SIZE = 512
-DEFAULT_STAGE2_LR = 3e-5
-DEFAULT_NUM_WORKERS = -1
-DEFAULT_PREFETCH_FACTOR = 16
-DEFAULT_BATCH_BACKOFF_RATIO = 0.95
-DEFAULT_USE_FP16 = True
-DEFAULT_USE_COMPILE = True

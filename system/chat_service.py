@@ -39,9 +39,6 @@ def infer(user_input: str, history: Optional[List[List[str]]] = None) -> Dict[st
             "context": {
                 "enabled": bool(context_meta.get("enabled", False)),
                 "reason": str(context_meta.get("reason", "unknown")),
-                "has_trigger": bool(context_meta.get("has_trigger", False)),
-                "is_short_query": bool(context_meta.get("is_short_query", False)),
-                "negative_hit": bool(context_meta.get("negative_hit", False)),
                 "history_count": int(context_meta.get("history_count", 0)),
             },
             "retrieval": {
