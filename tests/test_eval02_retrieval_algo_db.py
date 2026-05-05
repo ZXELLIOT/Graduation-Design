@@ -174,7 +174,6 @@ def run_eval() -> None:
     # 加载全量语料库
     engine = SimCSEModelEngine()
     query_index = load_faiss_index()
-    response_index = None
     text_store = load_text_store(max_rows=int(getattr(query_index, "ntotal", 0)))
     query_texts = [text_store.get_query(i) for i in range(len(text_store))]
     reply_texts = [text_store.get_response(i) for i in range(len(text_store))]
@@ -223,7 +222,6 @@ def run_eval() -> None:
             comparator = DialogComparator(
                 model_engine=engine,
                 query_index=query_index,
-                response_index=response_index,
                 doc_texts=[],
                 query_texts=query_texts,
                 reply_texts=reply_texts,

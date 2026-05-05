@@ -9,7 +9,7 @@ system/comparator.py
     步骤2: 上下文判定 — 检测短文本/指代关键词，决定是否拼接历史
     步骤3: Query 编码 — 将文本转为 768 维语义向量
     步骤4: FAISS 粗召回 — 在 query_index 中快速召回 top-N 候选索引
-    步骤5: 加权重排 — 对候选分别计算问问相似度和问答相似度，加权融合排序
+    步骤5: 加权重排 — 按 CSV 行号读取答句实时编码，加权融合排序
     步骤6: 阈值过滤 — 最高分低于阈值则拒答，否则返回最优回复
 """
 
@@ -40,7 +40,6 @@ class DialogComparator:
         self,
         model_engine,
         query_index,
-        response_index,
         doc_texts,
         similarity_threshold,
         query_texts: Optional[List[str]] = None,
@@ -62,7 +61,6 @@ class DialogComparator:
         参数:
             model_engine: 文本编码引擎（需提供 encode_one 方法）。
             query_index: 预加载的问句索引对象。
-            response_index: 预加载的答句索引对象。
             doc_texts: 预加载的文本映射列表。
             similarity_threshold: 置信度阈值，高于该分值才返回命中回复。
             rerank_weights: 语义重排权重 (问问相似权重, 问答相似权重)。
@@ -80,7 +78,6 @@ class DialogComparator:
         self.similarity_threshold = min(max(float(similarity_threshold), 0.0), 1.0)
         self.rerank_weights = self._normalize_rerank_weights(rerank_weights)
         self.query_index = query_index
-        self.response_index = response_index
         self.doc_texts: List[dict] = doc_texts if isinstance(doc_texts, list) else []
         self.text_store = text_store
         if text_store is not None:
@@ -349,9 +346,7 @@ class DialogComparator:
 
         对每个候选同时计算两个相似度:
             - 问问相似度: 用户向量 vs 候选问句向量（query_index.reconstruct）
-            - 问答相似度: 用户向量 vs 候选答句向量
-              · 有 response_index → 直接 reconstruct
-              · 无 response_index → 按 CSV 行号读取答句文本，response_encoder 实时编码
+            - 问答相似度: 用户向量 vs 候选答句向量（按 CSV 行号读取文本 → response_encoder 实时编码）
 
         最终得分 = rerank_query_weight × 问问相似度 + rerank_reply_weight × 问答相似度
         """
@@ -366,16 +361,12 @@ class DialogComparator:
         cand_query_vecs = [np.asarray(self.query_index.reconstruct(idx), dtype=np.float32) for idx in valid_ids]
         query_mat = np.vstack(cand_query_vecs)
 
-        # 候选答句向量：优先索引重建，否则按行号取文本实时编码
-        if self.response_index is not None:
-            cand_resp_vecs = [np.asarray(self.response_index.reconstruct(idx), dtype=np.float32) for idx in valid_ids]
-        else:
-            reply_texts = [self._get_reply_text(idx) for idx in valid_ids]
-            cand_resp_vecs_np = self.model_engine.encode(
-                reply_texts, encoder="response", batch_size=64, show_progress=False, return_numpy=True,
-            )
-            cand_resp_vecs = [np.asarray(v, dtype=np.float32) for v in cand_resp_vecs_np]
-        resp_mat = np.vstack(cand_resp_vecs)
+        # 候选答句向量：按行号读取答句文本 → response_encoder 批量编码
+        reply_texts = [self._get_reply_text(idx) for idx in valid_ids]
+        cand_resp_vecs_np = self.model_engine.encode(
+            reply_texts, encoder="response", batch_size=64, show_progress=False, return_numpy=True,
+        )
+        resp_mat = np.asarray(cand_resp_vecs_np, dtype=np.float32)
 
         q_vec = user_query_np.astype(np.float32, copy=False)
         q_norm = float(np.linalg.norm(q_vec)) + self._eps
