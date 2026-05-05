@@ -75,6 +75,7 @@ def infer(user_input: str, history: Optional[List[List[str]]] = None) -> Dict[st
             "ai_fallback": False,
             "ai_fallback_reason": "not_enabled",
             "expected_reply": str(reply),
+            "ai_output": "",
             "trace": _safe_trace(trace_meta),
         }
 
@@ -103,7 +104,8 @@ def infer(user_input: str, history: Optional[List[List[str]]] = None) -> Dict[st
             "ai_elapsed_ms": 0.0,
             "ai_fallback": True,
             "ai_fallback_reason": "no_candidate",
-            "expected_reply": "知识库没有这个问题的回复",
+            "expected_reply": "",
+            "ai_output": "",
             "trace": trace_payload,
         }
 
@@ -124,7 +126,8 @@ def infer(user_input: str, history: Optional[List[List[str]]] = None) -> Dict[st
             "ai_elapsed_ms": 0.0,
             "ai_fallback": True,
             "ai_fallback_reason": "below_threshold",
-            "expected_reply": "知识库没有这个问题的回复",
+            "expected_reply": str(best_item.get("reply", "")) if isinstance(best_item, dict) else "",
+            "ai_output": "",
             "trace": trace_payload,
         }
 
@@ -166,6 +169,7 @@ def infer(user_input: str, history: Optional[List[List[str]]] = None) -> Dict[st
         "ai_elapsed_ms": float(ai_elapsed_ms),
         "ai_fallback": bool(ai_fallback),
         "ai_fallback_reason": str(ai_fallback_reason or "none"),
-        "expected_reply": final_reply,
+        "expected_reply": str(best_item.get("reply", "")),
+        "ai_output": ai_reply_text,
         "trace": trace_payload,
     }
