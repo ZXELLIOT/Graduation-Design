@@ -392,7 +392,9 @@ class DialogComparator:
         scored_candidates: List[ScoredCandidate] = []
         for pos in top_order:
             idx = valid_ids[int(pos)]
-            scored_candidates.append((float(final_scores[int(pos)]), self._build_item(idx)))
+            item = self._build_item(idx)
+            item["query_sim"] = float(query_sims[int(pos)])
+            scored_candidates.append((float(final_scores[int(pos)]), item))
         return scored_candidates
 
     def _get_topk_candidates_impl(

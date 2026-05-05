@@ -8,6 +8,6 @@ db/db_config.py
 from system.config import DB_CSV_PATH, DB_DATA_DIR
 
 # 问句索引输出路径
-DB_INDEX_PATH = str(DB_DATA_DIR) + "/query.index"
+DB_INDEX_PATH = str(DB_DATA_DIR) + "/querydata"
 
 __all__ = ["DB_CSV_PATH", "DB_DATA_DIR", "DB_INDEX_PATH"]

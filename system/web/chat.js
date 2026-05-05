@@ -15,6 +15,105 @@ const ctxToggle = document.getElementById("ctx-toggle");
 let history = [];
 let conversationId = null;
 
+const CHAT_STATE_KEY = "simcse_chat_state_v1";
+const COMPARATOR_SYNC_KEY = "simcse_comparator_sync_v1";
+
+function safeParse(jsonText, fallback) {
+  try { return JSON.parse(jsonText); } catch (e) { return fallback; }
+}
+
+function isFiniteNumber(v) {
+  return typeof v === "number" && Number.isFinite(v);
+}
+
+async function apiJson(url, options = {}, label = "接口") {
+  let res;
+  try {
+    res = await fetch(url, options);
+  } catch (e) {
+    throw new Error(`${label}请求失败：网络异常`);
+  }
+  let data = null;
+  try {
+    data = await res.json();
+  } catch (e) {
+    throw new Error(`${label}返回异常：非JSON响应`);
+  }
+  if (!res.ok) {
+    const detail = (data && data.detail) ? String(data.detail) : `HTTP ${res.status}`;
+    throw new Error(`${label}失败：${detail}`);
+  }
+  return data;
+}
+
+function persistChatState() {
+  const payload = {
+    history,
+    conversationId,
+    aiEnabled: Boolean(aiToggle.checked),
+    ctxEnabled: Boolean(ctxToggle.checked),
+    savedAt: Date.now(),
+  };
+  try { sessionStorage.setItem(CHAT_STATE_KEY, JSON.stringify(payload)); } catch (e) {}
+}
+
+function emitComparatorSync(partial) {
+  const payload = { ...partial, ts: Date.now() };
+  try { localStorage.setItem(COMPARATOR_SYNC_KEY, JSON.stringify(payload)); } catch (e) {}
+}
+
+function renderChatFromHistory() {
+  chatWindow.innerHTML = "";
+  addMessage("你好！我是 SimCSE 检索式对话机器人，可以直接开始聊天。", "bot");
+  for (const pair of history) {
+    if (!Array.isArray(pair) || pair.length < 2) continue;
+    addMessage(String(pair[0] ?? ""), "user");
+    addMessage(String(pair[1] ?? ""), "bot");
+  }
+}
+
+function restoreChatState() {
+  const raw = sessionStorage.getItem(CHAT_STATE_KEY);
+  if (!raw) {
+    renderChatFromHistory();
+    return;
+  }
+  const state = safeParse(raw, null);
+  if (!state || typeof state !== "object") {
+    renderChatFromHistory();
+    return;
+  }
+  history = Array.isArray(state.history) ? state.history : [];
+  conversationId = state.conversationId || null;
+  if (typeof state.aiEnabled === "boolean") aiToggle.checked = state.aiEnabled;
+  if (typeof state.ctxEnabled === "boolean") ctxToggle.checked = state.ctxEnabled;
+  renderChatFromHistory();
+  if (history.length > 0) {
+    setStatus(`已恢复会话（${history.length} 轮）`);
+  }
+}
+
+async function refreshComparatorSettings(silent = false) {
+  try {
+    const data = await apiJson("/api/settings/comparator", {}, "配置接口");
+    if (typeof data.ai_enhanced !== "boolean" || typeof data.context_matching_enabled !== "boolean") {
+      throw new Error("配置接口返回异常值：开关字段缺失或类型错误");
+    }
+    const aiEnabled = Boolean(data.ai_enhanced);
+    const ctxEnabled = Boolean(data.context_matching_enabled);
+    const aiChanged = aiToggle.checked !== aiEnabled;
+    const ctxChanged = ctxToggle.checked !== ctxEnabled;
+    aiToggle.checked = aiEnabled;
+    ctxToggle.checked = ctxEnabled;
+    if (!silent && (aiChanged || ctxChanged)) {
+      setStatus(`配置已同步 | AI:${aiEnabled ? "开" : "关"} 上下文:${ctxEnabled ? "开" : "关"}`);
+    }
+    persistChatState();
+  } catch (e) {
+    if (!silent) setStatus(e.message || "配置同步失败", true);
+  }
+}
+
 // ============================================================
 // 消息
 // ============================================================
@@ -61,13 +160,16 @@ function setStatus(text, isError) {
 // ============================================================
 
 async function sendMessage(message) {
-  const res = await fetch("/api/chat", {
+  const data = await apiJson("/api/chat", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ message, history, conversation_id: conversationId }),
-  });
-  if (!res.ok) throw new Error(`请求失败: ${res.status}`);
-  return await res.json();
+  }, "聊天接口");
+
+  if (typeof data.reply !== "string" || !isFiniteNumber(Number(data.score)) || !isFiniteNumber(Number(data.elapsed_ms))) {
+    throw new Error("聊天接口返回异常值：reply/score/elapsed_ms 字段非法");
+  }
+  return data;
 }
 
 chatInput.addEventListener("keydown", (e) => {
@@ -94,11 +196,12 @@ chatForm.addEventListener("submit", async (e) => {
     addMessage(data.reply, "bot");
     history.push([msg, data.reply]);
     if (history.length > 10) history = history.slice(-10);
+    persistChatState();
     const aiTag = data.ai_enhanced ? " | AI增强" : "";
     setStatus(`相似度 ${Number(data.score).toFixed(3)} | ${Number(data.elapsed_ms).toFixed(0)}ms${aiTag}`);
   } catch (err) {
     removeLoading();
-    setStatus("请求失败，请检查服务状态", true);
+    setStatus(err.message || "请求失败，请检查服务状态", true);
     addMessage("系统暂时不可用，请稍后重试。", "bot");
   } finally {
     chatInput.disabled = false;
@@ -116,7 +219,13 @@ async function syncToggle(key, value) {
   const payload = {};
   if (key === "ai") payload.ai_enhanced = value;
   if (key === "ctx") payload.context_matching_enabled = value;
-  try { await fetch("/api/settings/comparator", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) }); } catch (e) {}
+  try {
+    await apiJson("/api/settings/comparator", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) }, "配置更新接口");
+    emitComparatorSync(payload);
+    persistChatState();
+  } catch (e) {
+    setStatus(e.message || "开关更新失败", true);
+  }
 }
 
 function showAiPopup(success, detail) {
@@ -135,22 +244,24 @@ aiToggle.addEventListener("change", async () => {
   const on = aiToggle.checked;
   const t0 = performance.now();
   try {
-    const res = await fetch("/api/settings/comparator", {
+    const data = await apiJson("/api/settings/comparator", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ai_enhanced: on }),
-    });
-    const data = await res.json();
+    }, "AI开关接口");
     const ms = (performance.now() - t0).toFixed(0);
-    if (res.ok) {
+    if (data && typeof data === "object") {
+      emitComparatorSync({ ai_enhanced: on });
+      persistChatState();
       showAiPopup(true, `AI 增强已${on ? "开启" : "关闭"} | 响应 ${ms}ms`);
     } else {
       aiToggle.checked = !on;
-      showAiPopup(false, `AI 增强${on ? "开启" : "关闭"}失败: ${data.detail || "未知错误"} | ${ms}ms`);
+      showAiPopup(false, `AI 增强${on ? "开启" : "关闭"}失败: 返回数据异常 | ${ms}ms`);
     }
   } catch (e) {
     aiToggle.checked = !on;
-    showAiPopup(false, `AI 增强请求失败: 网络错误`);
+    showAiPopup(false, e.message || "AI 增强请求失败");
+    setStatus(e.message || "AI 增强更新失败", true);
   }
 });
 
@@ -163,22 +274,36 @@ ctxToggle.addEventListener("change", () => syncToggle("ctx", ctxToggle.checked))
 clearChatBtn.addEventListener("click", () => {
   history = [];
   conversationId = null;
-  chatWindow.innerHTML = "";
-  addMessage("你好！我是 SimCSE 检索式对话机器人，可以直接开始聊天。", "bot");
+  renderChatFromHistory();
+  persistChatState();
   setStatus("对话已清空");
 });
 
 clearCtxBtn.addEventListener("click", async () => {
   try {
-    const res = await fetch("/api/context/clear", { method: "POST" });
-    const data = await res.json();
+    const data = await apiJson("/api/context/clear", { method: "POST" }, "上下文清理接口");
+    const cleared = Number(data.cleared);
+    if (!Number.isFinite(cleared)) {
+      throw new Error("上下文清理接口返回异常值：cleared 非数字");
+    }
     setStatus(`上下文记忆已清除（${data.cleared} 条）`);
-  } catch (e) { setStatus("清除失败", true); }
+  } catch (e) { setStatus(e.message || "清除失败", true); }
+});
+
+window.addEventListener("storage", (evt) => {
+  if (evt.key !== COMPARATOR_SYNC_KEY || !evt.newValue) return;
+  const incoming = safeParse(evt.newValue, null);
+  if (!incoming || typeof incoming !== "object") return;
+  if (typeof incoming.ai_enhanced === "boolean") aiToggle.checked = incoming.ai_enhanced;
+  if (typeof incoming.context_matching_enabled === "boolean") ctxToggle.checked = incoming.context_matching_enabled;
+  persistChatState();
 });
 
 // ============================================================
 // 初始化
 // ============================================================
 
-addMessage("你好！我是 SimCSE 检索式对话机器人，可以直接开始聊天。", "bot");
+restoreChatState();
 setStatus("就绪");
+refreshComparatorSettings(true);
+setInterval(() => refreshComparatorSettings(true), 3000);

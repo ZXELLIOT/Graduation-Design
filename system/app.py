@@ -203,6 +203,8 @@ def api_perf() -> Dict[str, Any]:
     logs = latest_logs(limit=120)
     elapsed_vals = [float(x.get("elapsed_ms", 0.0)) for x in logs if isinstance(x, dict)]
     elapsed_vals = [x for x in elapsed_vals if x >= 0.0]
+    score_vals = [float(x.get("score", 0.0)) for x in logs if isinstance(x, dict)]
+    score_vals = [x for x in score_vals if 0.0 <= x <= 1.0]
 
     if elapsed_vals:
         avg_elapsed = float(sum(elapsed_vals) / len(elapsed_vals))
@@ -212,6 +214,8 @@ def api_perf() -> Dict[str, Any]:
         avg_elapsed = 0.0
         p95_elapsed = 0.0
         latest_elapsed = 0.0
+
+    latest_score = float(score_vals[-1]) if score_vals else 0.0
 
     return {
         "timestamp": time.strftime("%H:%M:%S", time.localtime()),
@@ -232,6 +236,7 @@ def api_perf() -> Dict[str, Any]:
             "latest_elapsed_ms": latest_elapsed,
             "avg_elapsed_ms": avg_elapsed,
             "p95_elapsed_ms": p95_elapsed,
+            "latest_score": latest_score,
         },
     }
 

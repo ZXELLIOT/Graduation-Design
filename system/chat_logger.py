@@ -61,6 +61,7 @@ def append_chat_log(
         "user_input": used_query or user_input,
         "raw_user_input": user_input,
         "reply": result.get("reply", ""),
+        "ai_output": result.get("ai_output", ""),
         "score": float(result.get("score", 0.0)),
         "result_type": result.get("result_type", "unknown"),
         "elapsed_ms": float(result.get("elapsed_ms", 0.0)),

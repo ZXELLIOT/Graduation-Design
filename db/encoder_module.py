@@ -16,9 +16,7 @@ db/encoder_module.py
 import os
 import sys
 import argparse
-import json
-from datetime import datetime
-from typing import Generator, List, Tuple
+from typing import Generator, List
 
 import pandas as pd
 import torch
@@ -54,10 +52,15 @@ class DataLoader:
         csv_path: str,
         n_samples=None,
         start_offset: int = 0,
-        chunk_size: int = 100000,
+        chunk_size: int = 10000,
+        target_rows: int | None = None,
     ) -> Generator[List[str], None, None]:
         """分块流式读取问句列，支持断点续跑。"""
-        target = DataLoader.resolve_target_rows(csv_path, n_samples=n_samples)
+        target = (
+            target_rows
+            if target_rows is not None
+            else DataLoader.resolve_target_rows(csv_path, n_samples=n_samples)
+        )
         if start_offset >= target:
             return
 
@@ -116,7 +119,7 @@ class VectorDB:
 
     def add(self, embeddings: torch.Tensor):
         vecs = self._to_float32(embeddings)
-        self.index.add(vecs)
+        self.index.add(vecs)  # type: ignore[call-arg]
 
     def save(self, path: str):
         d = os.path.dirname(os.path.abspath(path))
@@ -139,67 +142,41 @@ class CorpusEncoder:
     def __init__(self, model_engine):
         self.model_engine = model_engine
 
-    @staticmethod
-    def _state_path(index_path: str) -> str:
-        return index_path + "_state.json"
-
-    @staticmethod
-    def _save_state(path: str, payload: dict):
-        tmp = path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False, indent=2)
-        os.replace(tmp, path)
-
-    @staticmethod
-    def _load_state(path: str) -> dict:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-
     def encode_corpus_to_data(
         self,
         csv_path: str,
         index_path: str,
         n_samples=0,
         batch_size: int = 128,
-        chunk_size: int = 100000,
+        chunk_size: int = 10000,
         checkpoint_every: int = 5,
-        resume: bool = True,
     ):
         """
         编码入库主流程。
 
         参数:
             csv_path:      语料 CSV 路径。
-            index_path:    FAISS 索引输出路径 (如 db/data/query.index)。
+            index_path:    FAISS 索引输出路径 (如 db/data/querydata)。
             n_samples:     样本上限 (<=0 表示全量)。
             batch_size:    编码批大小。
             chunk_size:    流式分块行数。
             checkpoint_every: 每 N 块存一次检查点。
-            resume:        断点续跑。
         """
-        state_path = self._state_path(index_path)
         total = DataLoader.resolve_target_rows(csv_path, n_samples=n_samples if n_samples > 0 else None)
         processed = 0
-        db = None
-
-        # 断点续跑
-        if resume and os.path.exists(state_path) and os.path.exists(index_path):
-            state = self._load_state(state_path)
-            if os.path.abspath(state.get("csv_path", "")) == os.path.abspath(csv_path):
-                processed = int(state.get("processed_rows", 0))
-                db = VectorDB.load(index_path, dimension=DEFAULT_VECTOR_DIM)
-                print(f"断点续跑：已完成 {processed}/{total}")
-        if db is None:
-            db = VectorDB(dimension=DEFAULT_VECTOR_DIM)
+        db = VectorDB(dimension=DEFAULT_VECTOR_DIM)
 
         if processed >= total:
             print("已完成，无需重新编码。")
             return {"index_path": index_path, "size": processed, "finished": True}
 
+        pbar = tqdm(total=total, initial=processed, desc="编码入库", unit="条", dynamic_ncols=True)
         chunk_idx = 0
+        total_chunks = -(-total // chunk_size) if chunk_size > 0 else 0  # ceil division
         for queries in DataLoader.iter_queries(
             csv_path, n_samples=n_samples if n_samples > 0 else None,
             start_offset=processed, chunk_size=chunk_size,
+            target_rows=total,
         ):
             chunk_idx += 1
 
@@ -209,29 +186,16 @@ class CorpusEncoder:
             )
             db.add(query_tensor)
             processed += len(queries)
-
-            pct = processed / total * 100 if total else 100
-            print(f"  块#{chunk_idx} {len(queries)}条, 累计 {processed}/{total} ({pct:.1f}%)")
+            pbar.update(len(queries))
+            pbar.set_postfix(分块=f"{chunk_idx}/{total_chunks}")
 
             # 检查点
             if chunk_idx % checkpoint_every == 0:
                 db.save(index_path)
-                self._save_state(state_path, {
-                    "csv_path": os.path.abspath(csv_path),
-                    "processed_rows": processed,
-                    "total_rows": total,
-                    "updated_at": datetime.now().isoformat(timespec="seconds"),
-                })
+        pbar.close()
 
         # 最终落盘
         db.save(index_path)
-        self._save_state(state_path, {
-            "csv_path": os.path.abspath(csv_path),
-            "processed_rows": processed,
-            "total_rows": total,
-            "finished": True,
-            "updated_at": datetime.now().isoformat(timespec="seconds"),
-        })
 
         print(f"编码完成: {index_path} ({processed} 条)")
         return {"index_path": index_path, "size": processed, "finished": True}
@@ -243,9 +207,8 @@ def main():
     parser.add_argument("--index_path", type=str, default=DB_INDEX_PATH)
     parser.add_argument("--batch_size", type=int, default=128)
     parser.add_argument("--n_samples", type=int, default=0)
-    parser.add_argument("--chunk_size", type=int, default=100000)
+    parser.add_argument("--chunk_size", type=int, default=10000)
     parser.add_argument("--checkpoint_every", type=int, default=5)
-    parser.add_argument("--resume", type=int, default=1)
     args = parser.parse_args()
 
     engine = SimCSEModelEngine()
@@ -257,7 +220,6 @@ def main():
         batch_size=args.batch_size,
         chunk_size=args.chunk_size,
         checkpoint_every=args.checkpoint_every,
-        resume=bool(args.resume),
     )
     print(f"结果: {result}")
 

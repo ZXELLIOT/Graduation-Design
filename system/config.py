@@ -39,7 +39,7 @@ DB_DATA_DIR = str(PROJECT_ROOT / "db" / "data")
 DB_CSV_PATH = str(Path(DB_DATA_DIR) / "system_data.csv")
 
 # FAISS 问句索引文件
-DB_QUERY_INDEX_FILE = str(Path(DB_DATA_DIR) / "query.index")
+DB_QUERY_INDEX_FILE = str(Path(DB_DATA_DIR) / "querydata")
 
 # ============================================================
 # 对话匹配参数
