@@ -349,13 +349,11 @@ class DialogComparator:
 
         对每个候选同时计算两个相似度:
             - 问问相似度: 用户向量 vs 候选问句向量（query_index.reconstruct）
-            - 问答相似度: 用户向量 vs 候选答句向量（response_index.reconstruct）
+            - 问答相似度: 用户向量 vs 候选答句向量
+              · 有 response_index → 直接 reconstruct
+              · 无 response_index → 按 CSV 行号读取答句文本，response_encoder 实时编码
 
         最终得分 = rerank_query_weight × 问问相似度 + rerank_reply_weight × 问答相似度
-
-        为什么这样设计?
-            单靠问问相似度可能找错回复（问句相似但答句不匹配），
-            加入问答相似度作为修正项能更准确地衡量"这个回复是否合适"。
         """
         if self.query_index is None:
             return []
@@ -368,23 +366,25 @@ class DialogComparator:
         cand_query_vecs = [np.asarray(self.query_index.reconstruct(idx), dtype=np.float32) for idx in valid_ids]
         query_mat = np.vstack(cand_query_vecs)
 
-        # 有 response_index 时做加权融合，否则纯用问句相似度
-        has_response = self.response_index is not None
-        if has_response:
+        # 候选答句向量：优先索引重建，否则按行号取文本实时编码
+        if self.response_index is not None:
             cand_resp_vecs = [np.asarray(self.response_index.reconstruct(idx), dtype=np.float32) for idx in valid_ids]
-            resp_mat = np.vstack(cand_resp_vecs)
+        else:
+            reply_texts = [self._get_reply_text(idx) for idx in valid_ids]
+            cand_resp_vecs_np = self.model_engine.encode(
+                reply_texts, encoder="response", batch_size=64, show_progress=False, return_numpy=True,
+            )
+            cand_resp_vecs = [np.asarray(v, dtype=np.float32) for v in cand_resp_vecs_np]
+        resp_mat = np.vstack(cand_resp_vecs)
 
         q_vec = user_query_np.astype(np.float32, copy=False)
         q_norm = float(np.linalg.norm(q_vec)) + self._eps
         query_norms = np.linalg.norm(query_mat, axis=1) + self._eps
-        query_sims = (query_mat @ q_vec) / (query_norms * q_norm)
+        resp_norms = np.linalg.norm(resp_mat, axis=1) + self._eps
 
-        if has_response:
-            resp_norms = np.linalg.norm(resp_mat, axis=1) + self._eps
-            reply_sims = (resp_mat @ q_vec) / (resp_norms * q_norm)
-            final_scores = self.rerank_weights[0] * query_sims + self.rerank_weights[1] * reply_sims
-        else:
-            final_scores = query_sims
+        query_sims = (query_mat @ q_vec) / (query_norms * q_norm)
+        reply_sims = (resp_mat @ q_vec) / (resp_norms * q_norm)
+        final_scores = self.rerank_weights[0] * query_sims + self.rerank_weights[1] * reply_sims
 
         order = np.argsort(-final_scores)
         top_order = order[:top_k_safe]

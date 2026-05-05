@@ -94,9 +94,18 @@ def load_faiss_index() -> Any:
     return query_index
 
 
-def load_text_store(max_rows: int) -> TextStore:
-    """加载 CSV 文本偏移索引（仅加载与 FAISS 索引对应的前 N 行，带进度条）。"""
-    return TextStore(DB_CSV_PATH, max_rows=max_rows, show_progress=True)
+def load_text_store(max_rows: Optional[int] = None) -> TextStore:
+    """加载 CSV 文本偏移索引（全量加载，带进度条）。
+
+    max_rows 为 None 时自动计数全量行数；传入整数则截断到指定行数。
+    """
+    if max_rows is None:
+        try:
+            with open(DB_CSV_PATH, "r", encoding="utf-8") as f:
+                max_rows = max(sum(1 for _ in f) - 1, 0)
+        except Exception:
+            max_rows = 0
+    return TextStore(DB_CSV_PATH, max_rows=max_rows, show_progress=True) if max_rows > 0 else TextStore(DB_CSV_PATH)
 
 
 def initialize_system() -> DialogComparator:
@@ -124,18 +133,17 @@ def initialize_system() -> DialogComparator:
     print("[3/5] 加载向量索引...")
     query_index = load_faiss_index()
 
-    # 步骤4：加载 CSV 语料偏移索引（仅加载与索引条目数匹配的行，带进度条）
+    # 步骤4：加载 CSV 语料偏移索引（全量加载，带进度条）
     print("[4/5] 加载语料数据...")
     total_pairs = int(getattr(query_index, "ntotal", 0))
-    text_store = load_text_store(max_rows=total_pairs)
+    text_store = load_text_store()
 
-    # 步骤5：组装比较器 — 统一承载召回、重排、阈值与上下文策略
+    # 步骤5：组装比较器 — 答句相似度通过 CSV 行号实时编码计算
     print("[5/5] 初始化匹配引擎...")
-    response_index = None
     comparator = DialogComparator(
         model_engine=engine,
         query_index=query_index,
-        response_index=response_index,
+        response_index=None,
         doc_texts=[],
         text_store=text_store,
         similarity_threshold=SIMILARITY_THRESHOLD,

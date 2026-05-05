@@ -34,7 +34,7 @@ DEFAULT_VECTOR_DIM = 768
 
 
 class DataLoader:
-    """CSV 问句读取，支持全量/采样/分块流式。"""
+    """CSV 问句读取，支持全量/采样。"""
 
     @staticmethod
     def _count_rows(csv_path: str) -> int:
@@ -51,47 +51,18 @@ class DataLoader:
     def iter_queries(
         csv_path: str,
         n_samples=None,
-        start_offset: int = 0,
-        chunk_size: int = 10000,
         target_rows: int | None = None,
     ) -> Generator[List[str], None, None]:
-        """分块流式读取问句列，支持断点续跑。"""
         target = (
             target_rows
             if target_rows is not None
             else DataLoader.resolve_target_rows(csv_path, n_samples=n_samples)
         )
-        if start_offset >= target:
-            return
-
-        remaining = target - start_offset
-        scanned = 0
-        emitted = 0
-
-        for chunk in pd.read_csv(csv_path, usecols=["query"], chunksize=chunk_size, engine="c"):
-            if scanned >= target:
-                break
-
-            chunk = chunk.fillna("")
-            queries = chunk["query"].astype(str).tolist()
-            keep = min(len(queries), target - scanned)
-
-            if start_offset > scanned:
-                skip = min(keep, start_offset - scanned)
-                queries = queries[skip:]
-                keep -= skip
-
-            if keep <= 0:
-                scanned += len(chunk["query"])
-                continue
-
-            queries = queries[:keep]
-            scanned += len(chunk["query"])
-            emitted += len(queries)
+        df = pd.read_csv(csv_path, usecols=["query"], engine="c")
+        df = df.fillna("")
+        queries = df["query"].astype(str).tolist()[:target]
+        if queries:
             yield queries
-
-            if emitted >= remaining:
-                break
 
 
 class VectorDB:
@@ -148,7 +119,6 @@ class CorpusEncoder:
         index_path: str,
         n_samples=0,
         batch_size: int = 128,
-        chunk_size: int = 10000,
         checkpoint_every: int = 5,
     ):
         """
@@ -159,27 +129,17 @@ class CorpusEncoder:
             index_path:    FAISS 索引输出路径 (如 db/data/querydata)。
             n_samples:     样本上限 (<=0 表示全量)。
             batch_size:    编码批大小。
-            chunk_size:    流式分块行数。
             checkpoint_every: 每 N 块存一次检查点。
         """
         total = DataLoader.resolve_target_rows(csv_path, n_samples=n_samples if n_samples > 0 else None)
-        processed = 0
         db = VectorDB(dimension=DEFAULT_VECTOR_DIM)
 
-        if processed >= total:
-            print("已完成，无需重新编码。")
-            return {"index_path": index_path, "size": processed, "finished": True}
-
-        pbar = tqdm(total=total, initial=processed, desc="编码入库", unit="条", dynamic_ncols=True)
-        chunk_idx = 0
-        total_chunks = -(-total // chunk_size) if chunk_size > 0 else 0  # ceil division
+        pbar = tqdm(total=total, desc="编码入库", unit="条", dynamic_ncols=True)
+        processed = 0
         for queries in DataLoader.iter_queries(
             csv_path, n_samples=n_samples if n_samples > 0 else None,
-            start_offset=processed, chunk_size=chunk_size,
             target_rows=total,
         ):
-            chunk_idx += 1
-
             # 编码
             query_tensor = self.model_engine.encode(
                 queries, encoder="query", batch_size=batch_size, show_progress=False,
@@ -187,11 +147,6 @@ class CorpusEncoder:
             db.add(query_tensor)
             processed += len(queries)
             pbar.update(len(queries))
-            pbar.set_postfix(分块=f"{chunk_idx}/{total_chunks}")
-
-            # 检查点
-            if chunk_idx % checkpoint_every == 0:
-                db.save(index_path)
         pbar.close()
 
         # 最终落盘
@@ -207,7 +162,6 @@ def main():
     parser.add_argument("--index_path", type=str, default=DB_INDEX_PATH)
     parser.add_argument("--batch_size", type=int, default=128)
     parser.add_argument("--n_samples", type=int, default=0)
-    parser.add_argument("--chunk_size", type=int, default=10000)
     parser.add_argument("--checkpoint_every", type=int, default=5)
     args = parser.parse_args()
 
@@ -218,7 +172,6 @@ def main():
         index_path=args.index_path,
         n_samples=args.n_samples,
         batch_size=args.batch_size,
-        chunk_size=args.chunk_size,
         checkpoint_every=args.checkpoint_every,
     )
     print(f"结果: {result}")
