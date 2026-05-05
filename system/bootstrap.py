@@ -12,6 +12,7 @@ import time
 from typing import Any, List, Optional, Tuple
 
 import faiss
+import numpy as np
 import pandas as pd
 from tqdm.auto import tqdm
 
@@ -21,6 +22,7 @@ from system.text_store import TextStore
 from system.config import (
     DB_CSV_PATH,
     DB_QUERY_INDEX_FILE,
+    DB_LOAD_MAX_ROWS,
     SIMILARITY_THRESHOLD,
     RERANK_WEIGHTS,
     CONTEXT_MAX_TURNS,
@@ -82,11 +84,12 @@ def validate_database() -> Tuple[bool, str]:
 
 
 def load_faiss_index() -> Any:
-    """加载 FAISS 问句索引（独立步骤，带实时状态反馈）。"""
+    """加载 FAISS 问句索引（独立步骤，带可预估总进度）。"""
     index_path = DB_QUERY_INDEX_FILE
     index_size_mb = os.path.getsize(index_path) / (1024 * 1024)
     result: dict = {"index": None, "error": None}
     done = threading.Event()
+    expected_seconds = 30.0
 
     def _load_worker() -> None:
         try:
@@ -101,12 +104,18 @@ def load_faiss_index() -> Any:
     spinner = ["|", "/", "-", "\\"]
     tick = 0
     t0 = time.perf_counter()
+    shown_percent = 0
 
-    with tqdm(total=None, desc="FAISS索引加载", unit="步", dynamic_ncols=True, leave=True) as pbar:
+    with tqdm(total=100, desc="FAISS索引读取", unit="%", dynamic_ncols=True, leave=True) as pbar:
         while not done.wait(0.12):
             elapsed = time.perf_counter() - t0
-            pbar.set_postfix_str(f"{index_size_mb:.1f}MB {spinner[tick % len(spinner)]} {elapsed:.1f}s")
-            pbar.update(1)
+            estimated = min(99, int((elapsed / expected_seconds) * 100))
+            if estimated > shown_percent:
+                pbar.update(estimated - shown_percent)
+                shown_percent = estimated
+            pbar.set_postfix_str(
+                f"{index_size_mb:.1f}MB {spinner[tick % len(spinner)]} 已{elapsed:.1f}s/预估{expected_seconds:.0f}s"
+            )
             tick += 1
 
         elapsed = time.perf_counter() - t0
@@ -114,11 +123,46 @@ def load_faiss_index() -> Any:
             raise result["error"]
 
         query_index = result["index"]
-        ntotal = int(getattr(query_index, "ntotal", 0))
-        pbar.set_postfix_str(f"{ntotal:,} 条向量, {elapsed:.1f}s")
-        pbar.update(1)
+        pbar.update(100 - shown_percent)
+        pbar.set_postfix_str(f"读取完成, 总耗时 {elapsed:.1f}s")
 
     return query_index
+
+
+def _build_small_query_index(full_index: Any, n_rows: int) -> Any:
+    """从全量索引重建前 n_rows 条向量，构建与文本加载上限对齐的小索引。"""
+    total = min(max(int(n_rows), 0), int(getattr(full_index, "ntotal", 0)))
+    if total <= 0:
+        raise RuntimeError("无法构建小索引：可用向量数量为0。")
+
+    dim = int(getattr(full_index, "d", 0))
+    if dim <= 0:
+        sample = np.asarray(full_index.reconstruct(0), dtype=np.float32)
+        dim = int(sample.shape[0])
+    if dim <= 0:
+        raise RuntimeError("无法构建小索引：向量维度异常。")
+
+    if hasattr(full_index, "hnsw"):
+        hnsw_m = int(full_index.hnsw.nb_neighbors(1))
+        small_index = faiss.IndexHNSWFlat(dim, hnsw_m, faiss.METRIC_INNER_PRODUCT)
+        if hasattr(full_index.hnsw, "efSearch"):
+            small_index.hnsw.efSearch = int(full_index.hnsw.efSearch)
+    else:
+        small_index = faiss.IndexFlatIP(dim)
+
+    batch_size = 10000
+    with tqdm(total=total, desc="FAISS运行时索引构建", unit="条", dynamic_ncols=True, leave=True) as pbar:
+        for start in range(0, total, batch_size):
+            cnt = min(batch_size, total - start)
+            if hasattr(full_index, "reconstruct_n"):
+                vecs = np.asarray(full_index.reconstruct_n(start, cnt), dtype=np.float32)
+            else:
+                vecs = np.asarray([full_index.reconstruct(i) for i in range(start, start + cnt)], dtype=np.float32)
+            small_index.add(vecs)  # type: ignore[call-arg]
+            pbar.update(cnt)
+            pbar.set_postfix_str(f"{start + cnt:,}/{total:,}")
+
+    return small_index
 
 
 def load_text_store(max_rows: Optional[int] = None) -> TextStore:
@@ -158,12 +202,21 @@ def initialize_system() -> DialogComparator:
 
     # 步骤3：加载 FAISS 问句索引（带进度条）
     print("[3/5] 加载向量索引...")
-    query_index = load_faiss_index()
+    full_query_index = load_faiss_index()
+
+    full_total = int(getattr(full_query_index, "ntotal", 0))
+    max_rows = max(1, int(DB_LOAD_MAX_ROWS))
+    effective_rows = min(full_total, max_rows)
+    if full_total > effective_rows:
+        print(f"    运行时索引将加载 {effective_rows:,} 条（原始索引 {full_total:,} 条）")
+        query_index = _build_small_query_index(full_query_index, effective_rows)
+    else:
+        query_index = full_query_index
 
     # 步骤4：加载 CSV 语料偏移索引（全量加载，带进度条）
     print("[4/5] 加载语料数据...")
     total_pairs = int(getattr(query_index, "ntotal", 0))
-    text_store = load_text_store()
+    text_store = load_text_store(max_rows=total_pairs)
 
     # 步骤5：组装比较器 — 答句相似度通过 CSV 行号实时编码计算
     print("[5/5] 初始化匹配引擎...")
@@ -182,7 +235,7 @@ def initialize_system() -> DialogComparator:
         context_matching_enabled=True,
     )
 
-    print(f"启动成功，知识库规模（索引）：{total_pairs} 条\n")
+    print(f"启动成功，知识库规模（运行时索引）：{total_pairs} 条\n")
     return comparator
 
 

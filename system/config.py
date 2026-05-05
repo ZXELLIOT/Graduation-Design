@@ -38,6 +38,9 @@ DB_DATA_DIR = str(PROJECT_ROOT / "db" / "data")
 # 语料 CSV 路径
 DB_CSV_PATH = str(Path(DB_DATA_DIR) / "system_data.csv")
 
+# 运行时加载上限：系统启动时仅加载前 N 条（索引与CSV文本都按该上限截断）
+DB_LOAD_MAX_ROWS = int(os.getenv("DB_LOAD_MAX_ROWS", "200000"))
+
 # FAISS 问句索引文件
 DB_QUERY_INDEX_FILE = str(Path(DB_DATA_DIR) / "querydata")
 
