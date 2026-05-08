@@ -79,13 +79,7 @@ class VectorDB:
         return embeddings.astype("float32")
 
     @staticmethod
-    def _build_index(dimension: int, use_ivf=False, n_total=0):
-        if use_ivf and n_total > 10000:
-            nlist = int(4 * (n_total ** 0.5))
-            quantizer = faiss.IndexFlatIP(dimension)
-            idx = faiss.IndexIVFPQ(quantizer, dimension, nlist, 8, 8, faiss.METRIC_INNER_PRODUCT)
-            idx.nprobe = 10
-            return idx
+    def _build_index(dimension: int):
         return faiss.IndexHNSWFlat(dimension, 32, faiss.METRIC_INNER_PRODUCT)
 
     def add(self, embeddings: torch.Tensor):

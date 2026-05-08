@@ -10,6 +10,7 @@ system/app.py
     - Linux 部署: 配置 Nginx 反向代理 + 公网域名
 """
 
+import math
 import os
 import sys
 import time
@@ -74,6 +75,7 @@ class ComparatorSettingsRequest(BaseModel):
     context_matching_enabled: Optional[bool] = None
     coarse_recall_count: Optional[int] = None
     rerank_top_k: Optional[int] = None
+    ai_enhanced: Optional[bool] = None
 
 
 api_app = FastAPI(title="SimCSE 检索式对话系统", version="1.0.0")
@@ -204,7 +206,7 @@ def api_perf() -> Dict[str, Any]:
 
     if elapsed_vals:
         avg_elapsed = float(sum(elapsed_vals) / len(elapsed_vals))
-        p95_elapsed = float(sorted(elapsed_vals)[max(0, int(len(elapsed_vals) * 0.95) - 1)])
+        p95_elapsed = float(sorted(elapsed_vals)[max(0, math.ceil(len(elapsed_vals) * 0.95) - 1)])
         latest_elapsed = float(elapsed_vals[-1])
     else:
         avg_elapsed = 0.0

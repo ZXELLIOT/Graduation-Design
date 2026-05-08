@@ -28,7 +28,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
-import torch.nn.functional as F
 from transformers import AutoModel, AutoTokenizer
 
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -38,6 +37,7 @@ if PROJECT_ROOT not in sys.path:
 
 from system.config import DB_CSV_PATH
 from system.model_engine import SimCSEModelEngine
+from tests.test_utils import encode_hf_texts
 from tests.tests_config import TEST_DATA_DIR, TEST_MODELS_DIR, TEST_RESULTS_DIR
 
 # ============================================================
@@ -93,49 +93,6 @@ def _load_eval_pairs_line_by_line(max_count: int) -> List[Tuple[str, str]]:
     if not pairs:
         raise RuntimeError("未读取到测试问答对。")
     return pairs
-
-
-def _mean_pool(last_hidden_state: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
-    """标准 mean pooling。"""
-    mask = attention_mask.unsqueeze(-1).expand(last_hidden_state.size()).float()
-    summed = (last_hidden_state * mask).sum(dim=1)
-    counts = mask.sum(dim=1).clamp(min=1e-9)
-    return summed / counts
-
-
-def _encode_hf_batch(
-    model: Any,
-    tokenizer: Any,
-    texts: List[str],
-    device: str,
-    max_len: int = MAX_LEN,
-    batch_size: int = BATCH_SIZE,
-) -> np.ndarray:
-    """HuggingFace 模型批量编码，返回已归一化向量。"""
-    arr: List[np.ndarray] = []
-    with torch.no_grad():
-        for i in range(0, len(texts), batch_size):
-            batch = [str(x) for x in texts[i : i + batch_size]]
-            tok = tokenizer(
-                batch,
-                padding=True,
-                truncation=True,
-                return_tensors="pt",
-                max_length=max_len,
-            ).to(device)
-            out = model(**tok)
-            if hasattr(out, "last_hidden_state") and out.last_hidden_state is not None:
-                emb = _mean_pool(out.last_hidden_state, tok["attention_mask"])
-            elif hasattr(out, "pooler_output") and out.pooler_output is not None:
-                emb = out.pooler_output
-            else:
-                raise RuntimeError("模型输出不包含 last_hidden_state/pooler_output，无法编码。")
-            emb = F.normalize(emb, p=2, dim=1)
-            arr.append(emb.detach().cpu().numpy().astype(np.float32))
-
-    if not arr:
-        return np.empty((0, 0), dtype=np.float32)
-    return np.vstack(arr)
 
 
 def _encode_simcse_query(engine: SimCSEModelEngine, texts: List[str], batch_size: int) -> np.ndarray:
@@ -194,7 +151,7 @@ def _append_reply_similarity_with_bge(cases_df: pd.DataFrame, device: str) -> pd
     actual = cases_df["实际输出"].astype(str).tolist()
     texts = expected + actual
 
-    embs = _encode_hf_batch(
+    embs = encode_hf_texts(
         model=model,
         tokenizer=tokenizer,
         texts=texts,
@@ -278,7 +235,7 @@ def run_eval() -> None:
         model = AutoModel.from_pretrained(model_path, local_files_only=True).to(device)
         model.eval()
 
-        corpus_reply_vecs = _encode_hf_batch(
+        corpus_reply_vecs = encode_hf_texts(
             model=model,
             tokenizer=tokenizer,
             texts=corpus_replies,
@@ -288,7 +245,7 @@ def run_eval() -> None:
         )
 
         def _hf_encode_one(text: str) -> np.ndarray:
-            return _encode_hf_batch(
+            return encode_hf_texts(
                 model=model,
                 tokenizer=tokenizer,
                 texts=[text],

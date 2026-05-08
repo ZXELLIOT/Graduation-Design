@@ -195,7 +195,7 @@ class DialogComparator:
         contextual = self._merge_context_with_budget(current, all_context)
         # 将当前输入存入上下文记忆
         self.context_memory.append(self._truncate_text(self._normalize_input(current_text)))
-        if len(self.context_memory) > self.context_max_turns * 2:
+        if len(self.context_memory) > self.context_max_turns:
             self.context_memory = self.context_memory[-self.context_max_turns:]
 
         meta.update({

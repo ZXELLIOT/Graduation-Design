@@ -6,6 +6,7 @@ system/text_store.py
     避免将百万级文本全量加载到内存（832 MB → ~30 MB）。
 """
 
+import csv
 import os
 from typing import List, Optional
 
@@ -66,18 +67,19 @@ class TextStore:
             f.seek(self.offsets[idx])
             return f.readline().strip()
 
+    def _parse_csv_row(self, idx: int) -> Optional[List[str]]:
+        """按索引读取并正确解析一行 CSV（支持引号包裹的含逗号字段）。"""
+        raw = self.get_row(idx)
+        if raw is None:
+            return None
+        return next(csv.reader([raw]))
+
     def get_query(self, idx: int) -> str:
         """读取 query 列。"""
-        row = self.get_row(idx)
-        if row is None:
-            return ""
-        parts = row.split(",", 1)
+        parts = self._parse_csv_row(idx)
         return parts[0].strip() if parts else ""
 
     def get_response(self, idx: int) -> str:
         """读取 response 列。"""
-        row = self.get_row(idx)
-        if row is None:
-            return ""
-        parts = row.split(",", 1)
-        return parts[1].strip() if len(parts) > 1 else ""
+        parts = self._parse_csv_row(idx)
+        return parts[1].strip() if parts and len(parts) > 1 else ""

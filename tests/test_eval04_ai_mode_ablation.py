@@ -32,7 +32,6 @@ import numpy as np
 import pandas as pd
 import requests
 import torch
-import torch.nn.functional as F
 from tqdm import tqdm
 from transformers import AutoModel, AutoTokenizer
 
@@ -51,6 +50,7 @@ from system.config import (
     AI_ENHANCE_TIMEOUT_SEC,
 )
 from system.model_engine import SimCSEModelEngine
+from tests.test_utils import encode_hf_texts
 from tests.tests_config import TEST_DATA_DIR, TEST_MODELS_DIR, TEST_RESULTS_DIR
 
 # ============================================================
@@ -106,47 +106,6 @@ def _build_small_query_index(full_index: Any, n_rows: int) -> Any:
     return small_index
 
 
-def _mean_pool(last_hidden_state: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
-    """BGE 标准 mean pooling。"""
-    mask = attention_mask.unsqueeze(-1).expand(last_hidden_state.size()).float()
-    summed = (last_hidden_state * mask).sum(dim=1)
-    counts = mask.sum(dim=1).clamp(min=1e-9)
-    return summed / counts
-
-
-def _encode_hf_texts(
-    model: Any,
-    tokenizer: Any,
-    texts: List[str],
-    device: str,
-    batch_size: int,
-    max_len: int = 512,
-) -> np.ndarray:
-    """批量编码文本，返回 L2 归一化向量。"""
-    arr: List[np.ndarray] = []
-    with torch.no_grad():
-        for i in range(0, len(texts), batch_size):
-            batch = [str(x) for x in texts[i : i + batch_size]]
-            tok = tokenizer(
-                batch,
-                padding=True,
-                truncation=True,
-                return_tensors="pt",
-                max_length=max_len,
-            ).to(device)
-            out = model(**tok)
-            if hasattr(out, "last_hidden_state") and out.last_hidden_state is not None:
-                emb = _mean_pool(out.last_hidden_state, tok["attention_mask"])
-            elif hasattr(out, "pooler_output") and out.pooler_output is not None:
-                emb = out.pooler_output
-            else:
-                raise RuntimeError("模型输出不包含 last_hidden_state/pooler_output，无法编码。")
-            emb = F.normalize(emb, p=2, dim=1)
-            arr.append(emb.detach().cpu().numpy().astype(np.float32))
-
-    return np.vstack(arr) if arr else np.empty((0, 0), dtype=np.float32)
-
-
 def _append_bge_similarity(cases_df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """计算三种策略的预期答句 vs 实际输出 BGE 相似度。"""
     scorer_path = os.path.join(TEST_MODELS_DIR, SIM_SCORER_MODEL)
@@ -174,7 +133,7 @@ def _append_bge_similarity(cases_df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Dat
         text_list.extend(outs)
         start += len(outs)
 
-    embs = _encode_hf_texts(
+    embs = encode_hf_texts(
         model=model,
         tokenizer=tokenizer,
         texts=text_list,

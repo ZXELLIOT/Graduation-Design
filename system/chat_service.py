@@ -20,6 +20,29 @@ from system.config import (
 from system.runtime_settings import runtime_ai_settings
 
 
+def _safe_trace(trace_meta: Optional[Dict[str, Any]], rerank_top_k: int) -> Dict[str, Any]:
+    """从比较器 trace_meta 中安全提取上下文与检索元信息。"""
+    base = trace_meta if isinstance(trace_meta, dict) else {}
+    context_raw = base.get("context")
+    retrieval_raw = base.get("retrieval")
+    context_meta: Dict[str, Any] = context_raw if isinstance(context_raw, dict) else {}
+    retrieval_meta: Dict[str, Any] = retrieval_raw if isinstance(retrieval_raw, dict) else {}
+    return {
+        "context": {
+            "enabled": bool(context_meta.get("enabled", False)),
+            "reason": str(context_meta.get("reason", "unknown")),
+            "history_count": int(context_meta.get("history_count", 0)),
+        },
+        "retrieval": {
+            "top_k_requested": int(retrieval_meta.get("top_k_requested", rerank_top_k)),
+            "coarse_candidate_count": int(retrieval_meta.get("coarse_candidate_count", 0)),
+            "candidate_count": int(retrieval_meta.get("candidate_count", 0)),
+            "returned_count": int(retrieval_meta.get("returned_count", 0)),
+            "best_score": float(retrieval_meta.get("best_score", 0.0)),
+        },
+    }
+
+
 def infer(user_input: str, history: Optional[List[List[str]]] = None) -> Dict[str, Any]:
     """对外提供统一推理入口。"""
     comparator = get_dialog_comparator()
@@ -28,27 +51,6 @@ def infer(user_input: str, history: Optional[List[List[str]]] = None) -> Dict[st
     safe_history = history or []
     # 单一 top-k：检索重排与 AI 融合统一使用比较器 rerank_top_k。
     rerank_top_k = int(getattr(comparator, "rerank_top_k", 5))
-
-    def _safe_trace(trace_meta: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-        base = trace_meta if isinstance(trace_meta, dict) else {}
-        context_raw = base.get("context")
-        retrieval_raw = base.get("retrieval")
-        context_meta: Dict[str, Any] = context_raw if isinstance(context_raw, dict) else {}
-        retrieval_meta: Dict[str, Any] = retrieval_raw if isinstance(retrieval_raw, dict) else {}
-        return {
-            "context": {
-                "enabled": bool(context_meta.get("enabled", False)),
-                "reason": str(context_meta.get("reason", "unknown")),
-                "history_count": int(context_meta.get("history_count", 0)),
-            },
-            "retrieval": {
-                "top_k_requested": int(retrieval_meta.get("top_k_requested", rerank_top_k)),
-                "coarse_candidate_count": int(retrieval_meta.get("coarse_candidate_count", 0)),
-                "candidate_count": int(retrieval_meta.get("candidate_count", 0)),
-                "returned_count": int(retrieval_meta.get("returned_count", 0)),
-                "best_score": float(retrieval_meta.get("best_score", 0.0)),
-            },
-        }
 
     # 分支 A：AI 增强关闭 → 纯本地检索链路
     # 流程: 输入 → 比较器(清洗→上下文→编码→粗召回→重排) → 返回最优回复
@@ -73,7 +75,7 @@ def infer(user_input: str, history: Optional[List[List[str]]] = None) -> Dict[st
             "ai_fallback_reason": "not_enabled",
             "expected_reply": str(reply),
             "ai_output": "",
-            "trace": _safe_trace(trace_meta),
+            "trace": _safe_trace(trace_meta, rerank_top_k),
         }
 
     # 分支 B：AI 增强开启 → 检索 + AI 融合链路
@@ -85,7 +87,7 @@ def infer(user_input: str, history: Optional[List[List[str]]] = None) -> Dict[st
         history=safe_history,
         top_k=rerank_top_k,
     )
-    trace_payload = _safe_trace(trace_meta)
+    trace_payload = _safe_trace(trace_meta, rerank_top_k)
 
     if not candidates:
         elapsed_ms = (time.perf_counter() - t0) * 1000.0

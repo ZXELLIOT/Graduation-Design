@@ -34,7 +34,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
-import torch.nn.functional as F
 from transformers import AutoModel, AutoTokenizer
 
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -45,6 +44,7 @@ if PROJECT_ROOT not in sys.path:
 from system.config import DB_CSV_PATH, DB_QUERY_INDEX_FILE
 
 from system.model_engine import SimCSEModelEngine
+from tests.test_utils import encode_hf_texts
 from tests.tests_config import TEST_DATA_DIR, TEST_RESULTS_DIR
 
 # ============================================================
@@ -173,38 +173,6 @@ def _best_idx_excluding_exact(scores: np.ndarray, corpus_queries: List[str], inp
     return best
 
 
-def _encode_texts_with_bge(
-    texts: List[str],
-    tokenizer: Any,
-    model: Any,
-    device: str,
-    batch_size: int,
-) -> np.ndarray:
-    """使用本地 BGE 模型编码文本，并返回 L2 归一化后的向量。"""
-    all_embs: List[np.ndarray] = []
-    with torch.no_grad():
-        for i in range(0, len(texts), batch_size):
-            batch = texts[i : i + batch_size]
-            enc = tokenizer(
-                batch,
-                padding=True,
-                truncation=True,
-                max_length=512,
-                return_tensors="pt",
-            ).to(device)
-            out = model(**enc)
-            hidden = out.last_hidden_state
-            mask = enc["attention_mask"].unsqueeze(-1).expand(hidden.size()).float()
-            summed = (hidden * mask).sum(dim=1)
-            counts = mask.sum(dim=1).clamp(min=1e-9)
-            mean_pooled = summed / counts
-            normed = F.normalize(mean_pooled, p=2, dim=1)
-            all_embs.append(normed.cpu().numpy().astype(np.float32))
-    if not all_embs:
-        return np.zeros((0, 1), dtype=np.float32)
-    return np.vstack(all_embs)
-
-
 def _append_reply_similarity(cases_df: pd.DataFrame) -> pd.DataFrame:
     """调用本地 BGE 模型，计算 预计输出 vs 实际输出 的答句相似度。"""
     if not os.path.exists(BGE_MODEL_DIR):
@@ -219,12 +187,14 @@ def _append_reply_similarity(cases_df: pd.DataFrame) -> pd.DataFrame:
     model = AutoModel.from_pretrained(BGE_MODEL_DIR).to(device)
     model.eval()
 
-    embs = _encode_texts_with_bge(
-        all_texts,
-        tokenizer=tokenizer,
+    embs = encode_hf_texts(
         model=model,
+        tokenizer=tokenizer,
+        texts=all_texts,
         device=device,
         batch_size=BATCH_SIZE,
+        max_len=512,
+        normalize=True,
     )
     n = len(cases_df)
     exp_emb = embs[:n]

@@ -125,17 +125,11 @@ def load_faiss_index() -> Any:
 
 
 def load_text_store(max_rows: Optional[int] = None) -> TextStore:
-    """加载 CSV 文本偏移索引（全量加载，带进度条）。
+    """加载 CSV 文本偏移索引。
 
-    max_rows 为 None 时自动计数全量行数；传入整数则截断到指定行数。
+    max_rows 为 None 时全量加载；传入整数则截断到指定行数并显示进度。
     """
-    if max_rows is None:
-        try:
-            with open(DB_CSV_PATH, "r", encoding="utf-8") as f:
-                max_rows = max(sum(1 for _ in f) - 1, 0)
-        except Exception:
-            max_rows = 0
-    return TextStore(DB_CSV_PATH, max_rows=max_rows, show_progress=True) if max_rows > 0 else TextStore(DB_CSV_PATH)
+    return TextStore(DB_CSV_PATH, max_rows=max_rows, show_progress=max_rows is not None and max_rows > 0)
 
 
 def initialize_system() -> DialogComparator:
