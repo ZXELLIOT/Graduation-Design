@@ -172,14 +172,13 @@ python train/train.py --model_name_or_path /path/to/pretrained/model
 
 ## 评测
 
-项目包含 4 组评测脚本：
+项目包含 3 组评测脚本：
 
 | 脚本 | 评测内容 |
 |------|----------|
 | `test_eval01` | 多模型相关性 & 编码速度对比 |
 | `test_eval02` | 不同检索策略 & 数据库规模精度对比 |
-| `test_eval03` | 含/不含系统的基线对比 |
-| `test_eval04` | AI 增强模式消融实验 |
+| `test_eval03` | AI 增强模式消融实验 |
 
 运行评测：
 

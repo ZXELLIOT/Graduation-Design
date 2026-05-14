@@ -48,3 +48,4 @@ tests/results/
 # 保留评测模块的测试用例和标准数据集
 !tests/data/eval_pairs.csv
 !tests/data/*_test.txt
+04-B22041824张新建-毕业设计文本(初稿).docx
