@@ -282,12 +282,10 @@ class DialogComparator:
         resp_mat = np.asarray(cand_resp_vecs_np, dtype=np.float32)
 
         q_vec = user_query_np.astype(np.float32, copy=False)
-        q_norm = float(np.linalg.norm(q_vec)) + self._eps
-        query_norms = np.linalg.norm(query_mat, axis=1) + self._eps
-        resp_norms = np.linalg.norm(resp_mat, axis=1) + self._eps
 
-        query_sims = (query_mat @ q_vec) / (query_norms * q_norm)
-        reply_sims = (resp_mat @ q_vec) / (resp_norms * q_norm)
+        # 所有向量已由 SimCSEModelEngine 完成 L2 归一化，点积即余弦相似度
+        query_sims = query_mat @ q_vec
+        reply_sims = resp_mat @ q_vec
         final_scores = self.rerank_weights[0] * query_sims + self.rerank_weights[1] * reply_sims
 
         order = np.argsort(-final_scores)

@@ -143,11 +143,10 @@ def _bge_batch(expected: List[str], actual_a: List[str], actual_b: List[str],
 # ============================================================
 # 三种算法
 # ============================================================
-def _algo_a(q_vec: np.ndarray, corpus_q: np.ndarray, corpus_q_norm: np.ndarray,
+def _algo_a(q_vec: np.ndarray, corpus_q: np.ndarray,
             corpus_replies: List[str], corpus_queries: List[str], raw_q: str) -> Tuple[int, float]:
-    """A: 全量问句余弦 O(N*d)。"""
-    qn = float(np.linalg.norm(q_vec)) + EPS
-    scores = (corpus_q @ q_vec) / (corpus_q_norm * qn)
+    """A: 全量问句余弦 O(N*d)。所有向量已 L2 归一化，点积即余弦相似度。"""
+    scores = corpus_q @ q_vec
     masked = scores.copy()
     for i, t in enumerate(corpus_queries):
         if t == raw_q: masked[i] = -1e9
@@ -156,14 +155,12 @@ def _algo_a(q_vec: np.ndarray, corpus_q: np.ndarray, corpus_q_norm: np.ndarray,
     return best, float(scores[best])
 
 
-def _algo_b(q_vec: np.ndarray, corpus_q: np.ndarray, corpus_q_norm: np.ndarray,
-            corpus_r: np.ndarray, corpus_r_norm: np.ndarray,
+def _algo_b(q_vec: np.ndarray, corpus_q: np.ndarray,
+            corpus_r: np.ndarray,
             corpus_replies: List[str], corpus_queries: List[str], raw_q: str) -> Tuple[int, float, float]:
-    """B: 全量问答加权 O(N*d) —— 对每条答句编码后加权排序。
-    corpus_r 为预编码的全部答句向量, corpus_r_norm 为其 L2 范数。"""
-    qn = float(np.linalg.norm(q_vec)) + EPS
-    q_sims = (corpus_q @ q_vec) / (corpus_q_norm * qn)
-    r_sims = (corpus_r @ q_vec) / (corpus_r_norm * qn)
+    """B: 全量问答加权 O(N*d) —— 所有向量已 L2 归一化，点积即余弦相似度。"""
+    q_sims = corpus_q @ q_vec
+    r_sims = corpus_r @ q_vec
     weighted = QUERY_W * q_sims + REPLY_W * r_sims
     masked = weighted.copy()
     for i, t in enumerate(corpus_queries):
@@ -174,10 +171,11 @@ def _algo_b(q_vec: np.ndarray, corpus_q: np.ndarray, corpus_q_norm: np.ndarray,
 
 
 def _algo_c(q_vec: np.ndarray, hnsw_idx: Any,
-            corpus_q: np.ndarray, corpus_q_norm: np.ndarray,
+            corpus_q: np.ndarray,
             corpus_replies: List[str], corpus_queries: List[str],
             raw_q: str, engine: SimCSEModelEngine, n_total: int) -> Tuple[int, float, float, float, float]:
     """C: FAISS HNSW + 加权重排 O(log N) + O(1)。
+    所有向量已 L2 归一化，点积即余弦相似度。
     返回 (best_idx, best_score, coarse_ms, rerank_ms, reply_ms)。"""
     t0 = time.perf_counter()
     sk = min(HNSW_SEARCH_K, n_total)
@@ -194,9 +192,8 @@ def _algo_c(q_vec: np.ndarray, hnsw_idx: Any,
     coarse_ms = (time.perf_counter() - t0) * 1000.0
 
     t0 = time.perf_counter()
-    qn = float(np.linalg.norm(q_vec)) + EPS
-    cv = corpus_q[cand_ids]; cn = corpus_q_norm[cand_ids]
-    cs = (cv @ q_vec) / (cn * qn)
+    cv = corpus_q[cand_ids]
+    cs = cv @ q_vec
     topk = min(RERANK_TOP_K, len(cand_ids))
     top_loc = np.argsort(-cs)[:topk]
     top_ids = [cand_ids[int(i)] for i in top_loc]
@@ -208,8 +205,7 @@ def _algo_c(q_vec: np.ndarray, hnsw_idx: Any,
     top_rv = np.asarray(engine.encode(top_r, encoder="response",
                        batch_size=min(BATCH_SIZE, topk),
                        show_progress=False, return_numpy=True), dtype=np.float32)
-    rn = np.linalg.norm(top_rv, axis=1) + EPS
-    rs = (top_rv @ q_vec) / (rn * qn)
+    rs = top_rv @ q_vec
     w = QUERY_W * top_qs + REPLY_W * rs
     best_loc = int(np.argmax(w))
     reply_ms = (time.perf_counter() - t0) * 1000.0
@@ -304,7 +300,6 @@ def run_eval() -> None:
 
         cq, cr = _load_corpus(scale)
         cv_q = _load_index_vectors(full_idx, scale)
-        cv_q_norm = np.linalg.norm(cv_q, axis=1) + EPS
         hnsw = _build_hnsw(cv_q, full_idx)
         actual_n = len(cq)
 
@@ -314,7 +309,6 @@ def run_eval() -> None:
         cv_r = np.asarray(
             engine.encode(cr, encoder="response", batch_size=BATCH_SIZE,
                           show_progress=False, return_numpy=True), dtype=np.float32)
-        cv_r_norm = np.linalg.norm(cv_r, axis=1) + EPS
         b_setup_sec = time.perf_counter() - t_enc0
         print(f"{b_setup_sec:.1f}s  (一次性, 不计入每条查询耗时)")
 
@@ -330,21 +324,21 @@ def run_eval() -> None:
             # A: 全量问句余弦
             for _ in range(TIMING_REPEATS):
                 t0 = time.perf_counter()
-                idx_a, _ = _algo_a(qv_f32, cv_q, cv_q_norm, cr, cq, q_text)
+                idx_a, _ = _algo_a(qv_f32, cv_q, cr, cq, q_text)
                 t_a += (time.perf_counter() - t0) * 1000.0
             replies_a.append(cr[idx_a])
 
             # B: 全量问答加权 (答句向量已预编码)
             for _ in range(TIMING_REPEATS):
                 t0 = time.perf_counter()
-                idx_b, _, qsb = _algo_b(qv_f32, cv_q, cv_q_norm, cv_r, cv_r_norm, cr, cq, q_text)
+                idx_b, _, qsb = _algo_b(qv_f32, cv_q, cv_r, cr, cq, q_text)
                 t_b += (time.perf_counter() - t0) * 1000.0
             replies_b.append(cr[idx_b])
 
             # C: FAISS + 重排
             for _ in range(TIMING_REPEATS):
                 idx_c, _, coarse_ms, rerank_ms, reply_ms = _algo_c(
-                    qv_f32, hnsw, cv_q, cv_q_norm, cr, cq, q_text, engine, actual_n)
+                    qv_f32, hnsw, cv_q, cr, cq, q_text, engine, actual_n)
                 t_c += coarse_ms + rerank_ms + reply_ms
                 t_c_coarse += coarse_ms; t_c_rerank += rerank_ms; t_c_reply += reply_ms
             replies_c.append(cr[idx_c])
@@ -366,13 +360,13 @@ def run_eval() -> None:
             for q_text, qv_i in zip(eval_q, eval_qv):
                 qv_f32 = np.asarray(qv_i, dtype=np.float32)
                 if tag == "A":
-                    _, qs = _algo_a(qv_f32, cv_q, cv_q_norm, cr, cq, q_text)
+                    _, qs = _algo_a(qv_f32, cv_q, cr, cq, q_text)
                 elif tag == "B":
-                    _, _, qs = _algo_b(qv_f32, cv_q, cv_q_norm, cv_r, cv_r_norm, cr, cq, q_text)
+                    _, _, qs = _algo_b(qv_f32, cv_q, cv_r, cr, cq, q_text)
                 else:
-                    idx, _, _, _, _ = _algo_c(qv_f32, hnsw, cv_q, cv_q_norm, cr, cq, q_text, engine, actual_n)
-                    qn = float(np.linalg.norm(qv_f32)) + EPS
-                    qs = float(np.dot(cv_q[idx], qv_f32) / (cv_q_norm[idx] * qn))
+                    idx, _, _, _, _ = _algo_c(qv_f32, hnsw, cv_q, cr, cq, q_text, engine, actual_n)
+                    # 向量已 L2 归一化，点积即余弦相似度
+                    qs = float(np.dot(cv_q[idx], qv_f32))
                 qs_vals.append(qs)
             fusion = QUERY_W * np.asarray(qs_vals) + REPLY_W * sims_arr
             sim_rows.append({

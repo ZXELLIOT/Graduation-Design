@@ -1,51 +1,15 @@
-# === IDE ===
 .vscode/
 .claude/
-
-# === Project instructions (local only) ===
+.deepseek/
 CLAUDE.md
-
-# === Python ===
 __pycache__/
-*.py[cod]
-*.pyo
-*.egg-info/
-dist/
-build/
-
-# === Virtual environment ===
-.venv/
-venv/
-env/
-ENV/
-
-# === Environment variables (contains API keys) ===
-.env
-.env.local
-.env.*.local
-
-# === OS ===
-.DS_Store
-Thumbs.db
-
-# === Runtime & logs ===
-runtime/
-*.log
-
-# === Large model files (binary) ===
-model/
-train/text2vec-base-chinese/
-tests/models/
-
-# === Large datasets (raw JSON) ===
+*data/
 data_prep/LCCC-large/
 data_prep/LCCC-small/
-
-# === Generated data & evaluation results ===
-db/data/
-tests/data/*
+model/
+runtime/
+tests/models/
 tests/results/
-# 保留评测模块的测试用例和标准数据集
-!tests/data/eval_pairs.csv
-!tests/data/*_test.txt
-04-B22041824张新建-毕业设计文本(初稿).docx
+tests/data/
+train/output/
+.env
