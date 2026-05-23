@@ -26,7 +26,10 @@ from system.config import (
     SIMILARITY_THRESHOLD,
     RERANK_WEIGHTS,
     CONTEXT_MAX_TURNS,
+    CONTEXT_MATCHING_ENABLED,
     MAX_TEXT_LEN,
+    COARSE_RECALL_COUNT,
+    DEFAULT_TOP_K,
 )
 
 # 全局单例对象，用于在多个请求间复用同一个比较器。
@@ -175,7 +178,9 @@ def initialize_system() -> DialogComparator:
         rerank_weights=RERANK_WEIGHTS,
         context_max_turns=CONTEXT_MAX_TURNS,
         max_text_len=MAX_TEXT_LEN,
-        context_matching_enabled=True,
+        context_matching_enabled=CONTEXT_MATCHING_ENABLED,
+        coarse_recall_count=COARSE_RECALL_COUNT,
+        rerank_top_k=DEFAULT_TOP_K,
     )
 
     if full_total > effective_rows:

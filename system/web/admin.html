@@ -111,9 +111,9 @@
           <label>API 就绪</label><span id="ai-api-ready" style="font-size:0.83rem;">--</span>
           <label>模型名称</label><span id="ai-model-name" style="font-size:0.83rem;word-break:break-all;">--</span>
           <label>API 地址</label><span id="ai-responses-url" style="font-size:0.78rem;word-break:break-all;color:#607080;">--</span>
-          <label>超时时间</label><span id="ai-timeout-sec" style="font-size:0.83rem;">--</span>
+          <label>超时时间(秒)</label><input id="ai-timeout-sec" type="number" min="1" max="120" step="1" />
         </div>
-        <p style="font-size:0.75rem;color:#8a9aaa;margin:6px 0 0;">模型、地址、超时等参数通过环境变量配置，不可在此修改。</p>
+        <p style="font-size:0.75rem;color:#8a9aaa;margin:6px 0 0;">模型、地址通过环境变量配置，不可在此修改。</p>
       </div>
 
       <!-- 日志 -->

@@ -19,6 +19,7 @@ class TextStore:
     def __init__(self, csv_path: str, max_rows: Optional[int] = None, show_progress: bool = False):
         self.csv_path = csv_path
         self.offsets: List[int] = []
+        self._fh = None
         self._build_index(max_rows, show_progress)
 
     def _build_index(self, max_rows: Optional[int] = None, show_progress: bool = False):
@@ -56,6 +57,8 @@ class TextStore:
             if pbar:
                 pbar.close()
 
+        self._fh = open(self.csv_path, "r", encoding="utf-8")
+
     def __len__(self) -> int:
         return len(self.offsets)
 
@@ -63,9 +66,8 @@ class TextStore:
         """按索引读取一行 CSV 原始文本。"""
         if idx < 0 or idx >= len(self.offsets):
             return None
-        with open(self.csv_path, "r", encoding="utf-8") as f:
-            f.seek(self.offsets[idx])
-            return f.readline().strip()
+        self._fh.seek(self.offsets[idx])
+        return self._fh.readline().strip()
 
     def _parse_csv_row(self, idx: int) -> Optional[List[str]]:
         """按索引读取并正确解析一行 CSV（支持引号包裹的含逗号字段）。"""

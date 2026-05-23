@@ -286,6 +286,8 @@ clearCtxBtn.addEventListener("click", async () => {
     if (!Number.isFinite(cleared)) {
       throw new Error("上下文清理接口返回异常值：cleared 非数字");
     }
+    history = [];
+    persistChatState();
     setStatus(`上下文记忆已清除（${data.cleared} 条）`);
   } catch (e) { setStatus(e.message || "清除失败", true); }
 });

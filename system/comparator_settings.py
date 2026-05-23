@@ -16,7 +16,7 @@ from system.config import (
     AI_ENHANCE_MODEL_NAME,
     AI_ENHANCE_RESPONSES_URL,
     AI_ENHANCE_TIMEOUT_SEC,
-    AI_ENHANCE_TOPK,
+    DEFAULT_TOP_K,
 )
 from system.runtime_settings import runtime_ai_settings, apply_ai_runtime_settings
 
@@ -29,7 +29,7 @@ def comparator_settings_payload(comparator: DialogComparator) -> Dict[str, Any]:
         "rerank_query_weight": float(comparator.rerank_weights[0]),
         "rerank_reply_weight": float(comparator.rerank_weights[1]),
         "coarse_recall_count": int(getattr(comparator, "coarse_recall_count", 0)),
-        "rerank_top_k": int(getattr(comparator, "rerank_top_k", 5)),
+        "rerank_top_k": int(getattr(comparator, "rerank_top_k", DEFAULT_TOP_K)),
         # 上下文参数
         "context_matching_enabled": bool(getattr(comparator, "context_matching_enabled", True)),
         "context_max_turns": int(comparator.context_max_turns),
@@ -38,8 +38,8 @@ def comparator_settings_payload(comparator: DialogComparator) -> Dict[str, Any]:
         "ai_enhanced": bool(runtime_ai_settings.get("enabled", False)),
         "ai_model_name": str(AI_ENHANCE_MODEL_NAME),
         "ai_responses_url": str(AI_ENHANCE_RESPONSES_URL),
-        "ai_timeout_sec": float(AI_ENHANCE_TIMEOUT_SEC),
-        "ai_topk": int(AI_ENHANCE_TOPK),
+        "ai_timeout_sec": float(runtime_ai_settings.get("timeout", AI_ENHANCE_TIMEOUT_SEC)),
+        "DEFAULT_TOP_K": int(DEFAULT_TOP_K),
         "ai_api_ready": bool(AI_ENHANCE_API_KEY),
     }
 
@@ -95,4 +95,5 @@ def apply_comparator_settings(comparator: DialogComparator, req: Any) -> None:
     # AI 增强运行时参数（含开关和模型配置）
     apply_ai_runtime_settings(
         ai_enhanced=req.ai_enhanced if hasattr(req, "ai_enhanced") and req.ai_enhanced is not None else None,
+        timeout=req.ai_timeout if hasattr(req, "ai_timeout") and req.ai_timeout is not None else None,
     )

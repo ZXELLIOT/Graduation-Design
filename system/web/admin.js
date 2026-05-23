@@ -270,11 +270,11 @@ async function loadSettings() {
     setVal("context-max-turns", Math.round(Number(d.context_max_turns)));
     setVal("max-text-len", Math.round(Number(d.max_text_len)));
     setVal("ai-enhanced", d.ai_enhanced);
+    setVal("ai-timeout-sec", isFiniteNumber(Number(d.ai_timeout_sec)) ? Number(d.ai_timeout_sec).toFixed(0) : "20");
     // AI只读信息
     const setRo = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = String(val ?? ""); };
     setRo("ai-model-name", d.ai_model_name || "(未配置)");
     setRo("ai-responses-url", d.ai_responses_url || "(未配置)");
-    setRo("ai-timeout-sec", isFiniteNumber(Number(d.ai_timeout_sec)) ? Number(d.ai_timeout_sec).toFixed(1) + " 秒" : "--");
     const apiReadyEl = document.getElementById("ai-api-ready");
     if (apiReadyEl) {
       apiReadyEl.textContent = d.ai_api_ready ? "✓ 已配置" : "✗ 未配置";
@@ -305,6 +305,7 @@ document.getElementById("apply-settings").addEventListener("click", async () => 
     context_max_turns: Math.round(Number(getVal("context-max-turns"))),
     max_text_len: Math.round(Number(getVal("max-text-len"))),
     ai_enhanced: getVal("ai-enhanced"),
+    ai_timeout: Number(getVal("ai-timeout-sec")),
   };
   try {
     const hasInvalidPayload = Object.entries(payload)

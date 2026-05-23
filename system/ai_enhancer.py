@@ -6,9 +6,12 @@ system/ai_enhancer.py
     将上下文输入和 topk 候选答句整合后调用大模型生成最终回复。
 """
 
+import traceback
 from typing import Any, Dict, List, Tuple
 
 import requests
+
+from system.config import DEFAULT_TOP_K, MAX_TEXT_LEN
 
 
 def _trim_text(text: str, max_len: int) -> str:
@@ -59,16 +62,16 @@ def generate_ai_enhanced_reply(
 
     # 为加速与降 token，AI 融合阶段只保留更小候选集。
     top_k_safe = max(1, int(top_k))
-    ai_top_k = min(top_k_safe, 3)
+    ai_top_k = min(top_k_safe, DEFAULT_TOP_K)
     top_replies: List[str] = []
     for _, item in candidates[:ai_top_k]:
-        top_replies.append(_trim_text(str(item.get("reply", "") or ""), max_len=72))
+        top_replies.append(_trim_text(str(item.get("reply", "") or ""), max_len=MAX_TEXT_LEN))
 
     top_reply_lines = [f"{idx}. {reply}" for idx, reply in enumerate(top_replies, start=1)]
 
-    compact_query = _trim_text(str(contextual_user_input), max_len=48)
+    compact_query = _trim_text(str(contextual_user_input), max_len=MAX_TEXT_LEN)
     prompt = (
-        "你是中文助手。请在候选中选最合适答复并润色成一句自然中文。"
+        "你是中文助手,叫SIM。请在候选中选最合适答复并润色成一句自然中文。"
         "\n如果你觉得这些候选回答都不好，请按你的想法直接生成更好的回答。"
         "\n只输出最终答复，不要解释。"
         f"\n用户输入:{compact_query}"
@@ -96,6 +99,6 @@ def generate_ai_enhanced_reply(
         if text:
             return text
     except Exception:
-        pass
+        traceback.print_exc()
 
     return str(candidates[0][1].get("reply", ""))

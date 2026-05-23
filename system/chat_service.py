@@ -16,6 +16,7 @@ from system.config import (
     AI_ENHANCE_MODEL_NAME,
     AI_ENHANCE_RESPONSES_URL,
     AI_ENHANCE_TIMEOUT_SEC,
+    DEFAULT_TOP_K,
 )
 from system.runtime_settings import runtime_ai_settings
 
@@ -50,7 +51,7 @@ def infer(user_input: str, history: Optional[List[List[str]]] = None) -> Dict[st
 
     safe_history = history or []
     # 单一 top-k：检索重排与 AI 融合统一使用比较器 rerank_top_k。
-    rerank_top_k = int(getattr(comparator, "rerank_top_k", 5))
+    rerank_top_k = int(getattr(comparator, "rerank_top_k", DEFAULT_TOP_K))
 
     # 分支 A：AI 增强关闭 → 纯本地检索链路
     # 流程: 输入 → 比较器(清洗→上下文→编码→粗召回→重排) → 返回最优回复
@@ -139,7 +140,7 @@ def infer(user_input: str, history: Optional[List[List[str]]] = None) -> Dict[st
         model_name=AI_ENHANCE_MODEL_NAME,
         responses_url=AI_ENHANCE_RESPONSES_URL,
         api_key=AI_ENHANCE_API_KEY,
-        timeout_sec=AI_ENHANCE_TIMEOUT_SEC,
+        timeout_sec=runtime_ai_settings.get("timeout", AI_ENHANCE_TIMEOUT_SEC),
     )
     ai_elapsed_ms = (time.perf_counter() - ai_t0) * 1000.0
 

@@ -19,6 +19,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
+from system.config import DEFAULT_TOP_K
+
 CandidateItem = Dict[str, Any]
 ScoredCandidate = Tuple[float, CandidateItem]
 TraceMeta = Dict[str, Any]
@@ -47,7 +49,7 @@ class DialogComparator:
         max_text_len=64,
         context_matching_enabled: bool = True,
         coarse_recall_count: int = 500,
-        rerank_top_k: int = 5,
+        rerank_top_k: int = DEFAULT_TOP_K,
     ):
         self._eps = 1e-12
         self.model_engine = model_engine
@@ -277,7 +279,7 @@ class DialogComparator:
         # 候选答句向量：按行号读取答句文本 → response_encoder 批量编码
         reply_texts = [self._get_reply_text(idx) for idx in valid_ids]
         cand_resp_vecs_np = self.model_engine.encode(
-            reply_texts, encoder="response", batch_size=64, show_progress=False, return_numpy=True,
+            reply_texts, encoder="response", batch_size=64, return_numpy=True,
         )
         resp_mat = np.asarray(cand_resp_vecs_np, dtype=np.float32)
 
@@ -303,7 +305,7 @@ class DialogComparator:
         self,
         user_input: str,
         history: Optional[List[Any]] = None,
-        top_k: int = 5,
+        top_k: int = DEFAULT_TOP_K,
     ) -> Tuple[str, List[ScoredCandidate], TraceMeta]:
         """按可读 6 步流程执行检索与重排，返回候选与元信息。"""
         top_k_safe = max(1, int(top_k or self.rerank_top_k))
@@ -370,7 +372,7 @@ class DialogComparator:
         self,
         user_input: str,
         history: Optional[List[Any]] = None,
-        top_k: int = 5,
+        top_k: int = DEFAULT_TOP_K,
     ) -> Tuple[str, List[ScoredCandidate], TraceMeta]:
         """返回 top-k 候选及可解释元信息。"""
         return self._get_topk_candidates_impl(user_input=user_input, history=history, top_k=top_k)
@@ -379,7 +381,7 @@ class DialogComparator:
         self,
         user_input: str,
         history: Optional[List[Any]] = None,
-        top_k: int = 5,
+        top_k: int = DEFAULT_TOP_K,
     ) -> Tuple[str, float, Optional[str], Optional[CandidateItem], str, str, TraceMeta]:
         """执行比较并返回可解释元信息。"""
         cleaned_input = self._prepare_user_input(user_input)

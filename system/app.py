@@ -76,6 +76,7 @@ class ComparatorSettingsRequest(BaseModel):
     coarse_recall_count: Optional[int] = None
     rerank_top_k: Optional[int] = None
     ai_enhanced: Optional[bool] = None
+    ai_timeout: Optional[float] = None
 
 
 api_app = FastAPI(title="SimCSE 检索式对话系统", version="1.0.0")
@@ -114,7 +115,7 @@ def admin_login(body: Dict[str, str]) -> Dict[str, Any]:
     """后台管理密码验证。"""
     pwd = body.get("password", "")
     if pwd == ADMIN_PASSWORD:
-        return {"ok": True, "token": "admin"}
+        return {"ok": True}
     return {"ok": False, "detail": "密码错误"}
 
 
